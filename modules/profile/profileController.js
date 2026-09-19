@@ -1,13 +1,13 @@
 const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
 
-// ১. ইউজারের প্রোফাইল তথ্য এবং বর্তমান ফ্যামিলি মেম্বারদের তালিকা দেখা (id, age ও gender সহ)
+// ১. ইউজারের প্রোফাইল তথ্য এবং বর্তমান ফ্যামিলি মেম্বারদের তালিকা দেখা
 exports.getMyProfile = async (req, res) => {
     try {
         const userId = req.user.id;
 
         const [users] = await db.query(
-            `SELECT id, name, father_name, para_name, family_members_count, 
+            `SELECT id, name, father_name, para_name, gender, age, family_members_count, 
                     has_android_expert, phone, avatar_url, base_role, status 
              FROM users WHERE id = ? AND (is_deleted = 0 OR is_deleted IS NULL)`, 
             [userId]
@@ -19,7 +19,6 @@ exports.getMyProfile = async (req, res) => {
 
         const user = users[0];
 
-        // পরিবারের সদস্যদের আইডি, বয়স এবং জেন্ডার সহ ফেচ করা
         const [familyMembers] = await db.query(
             `SELECT id, member_name, relation, age, gender, status FROM user_family_members WHERE user_id = ?`,
             [userId]
@@ -62,7 +61,7 @@ exports.requestProfileEdit = async (req, res) => {
     try {
         const userId = req.user.id;
         const userRole = (req.user.role || req.user.base_role || '').toUpperCase();
-        const { father_name, para_name, family_members } = req.body;
+        const { father_name, para_name, gender, age, family_members } = req.body;
 
         if (userRole === 'ADMIN' || userRole === 'SUPERADMIN') {
             return res.status(400).json({
@@ -90,9 +89,9 @@ exports.requestProfileEdit = async (req, res) => {
 
         await db.query(
             `INSERT INTO profile_edit_requests 
-             (user_id, requested_father_name, requested_para_name, requested_family_members, requested_family_count, is_deleted) 
-             VALUES (?, ?, ?, ?, ?, 0)`,
-            [userId, father_name || null, para_name || null, membersJson, count]
+             (user_id, requested_father_name, requested_para_name, requested_gender, requested_age, requested_family_members, requested_family_count, is_deleted) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+            [userId, father_name || null, para_name || null, gender || null, age || null, membersJson, count]
         );
 
         res.json({
@@ -151,13 +150,14 @@ exports.changePassword = async (req, res) => {
     }
 };
 
-// ৪. (অ্যাডমিন) সকল পেন্ডিং আবেদন দেখা (বর্তমান ও প্রস্তাবিত উভয় তালিকার id, age ও gender সহ)
+// ৪. (অ্যাডমিন) সকল পেন্ডিং আবেদন দেখা
 exports.getAllPendingRequests = async (req, res) => {
     try {
         // ১. নতুন রেজিস্ট্রেশন আবেদন
         const [pendingUsers] = await db.query(
             `SELECT id as request_id, id as user_id, name as user_name, phone as user_phone, 
                     father_name as requested_father_name, para_name as requested_para_name, 
+                    gender as requested_gender, age as requested_age,
                     family_members_count as requested_family_count, 'REGISTRATION' as request_type,
                     created_at 
              FROM users 
@@ -173,6 +173,8 @@ exports.getAllPendingRequests = async (req, res) => {
             u.requested_family_members = members;
             u.current_father_name = null;
             u.current_para_name = null;
+            u.current_gender = null;
+            u.current_age = null;
             u.current_family_count = 0;
             u.current_family_members = [];
         }
@@ -183,8 +185,11 @@ exports.getAllPendingRequests = async (req, res) => {
                     u.name as user_name, u.phone as user_phone, 
                     u.father_name as current_father_name, 
                     u.para_name as current_para_name, 
+                    u.gender as current_gender,
+                    u.age as current_age,
                     u.family_members_count as current_family_count,
                     r.requested_father_name, r.requested_para_name, 
+                    r.requested_gender, r.requested_age,
                     r.requested_family_members, r.requested_family_count, 
                     'PROFILE_EDIT' as request_type,
                     r.created_at
@@ -195,7 +200,6 @@ exports.getAllPendingRequests = async (req, res) => {
         );
 
         for (let r of editRequests) {
-            // ডাটাবেজের বর্তমান সদস্যদের id সহ আনা
             const [currentMembers] = await db.query(
                 `SELECT id, member_name, relation, age, gender FROM user_family_members WHERE user_id = ?`,
                 [r.user_id]
@@ -225,7 +229,7 @@ exports.getAllPendingRequests = async (req, res) => {
     }
 };
 
-// ৫. অ্যাডমিন কর্তৃক অনুমোদন (প্রোফাইল এডিট এবং নতুন রেজিস্ট্রেশন স্বয়ংক্রিয়ভাবে হ্যান্ডেল করবে)
+// ৫. অ্যাডমিন কর্তৃক অনুমোদন
 exports.approveRequest = async (req, res) => {
     const requestId = req.params.requestId || req.params.id;
     let connection;
@@ -234,9 +238,7 @@ exports.approveRequest = async (req, res) => {
         connection = await db.getConnection();
         await connection.beginTransaction();
 
-        console.log("Auto-Approving for ID / User ID:", requestId);
-
-        // ১. প্রোফাইল এডিট রিকোয়েস্ট চেক করা
+        // ১. প্রথমে প্রোফাইল এডিট রিকোয়েস্ট চেক করা (request_id বা id দিয়ে)
         const [editRequests] = await connection.query(
             `SELECT * FROM profile_edit_requests 
              WHERE (id = ? OR user_id = ?) AND UPPER(status) = 'PENDING' 
@@ -260,17 +262,17 @@ exports.approveRequest = async (req, res) => {
 
             const newCount = newMembers.length > 0 ? newMembers.length : request.requested_family_count;
 
-            // ক. ইউজার টেবিল আপডেট
             await connection.query(
                 `UPDATE users SET 
                  father_name = COALESCE(?, father_name),
                  para_name = COALESCE(?, para_name),
+                 gender = COALESCE(?, gender),
+                 age = COALESCE(?, age),
                  family_members_count = COALESCE(?, family_members_count)
                  WHERE id = ?`,
-                [request.requested_father_name, request.requested_para_name, newCount, request.user_id]
+                [request.requested_father_name, request.requested_para_name, request.requested_gender, request.requested_age, newCount, request.user_id]
             );
 
-            // খ. ফ্যামিলি মেম্বার টেবিল আপডেট (age ও gender সহ সংরক্ষণ)
             if (newMembers.length > 0) {
                 await connection.query(`DELETE FROM user_family_members WHERE user_id = ?`, [request.user_id]);
 
@@ -288,7 +290,6 @@ exports.approveRequest = async (req, res) => {
                 await Promise.all(memberInsertPromises);
             }
 
-            // গ. রিকোয়েস্ট স্ট্যাটাস APPROVED করা
             await connection.query(
                 `UPDATE profile_edit_requests SET status = 'APPROVED' WHERE id = ?`,
                 [request.id]
@@ -303,7 +304,7 @@ exports.approveRequest = async (req, res) => {
 
         // ২. নতুন ইউজার রেজিস্ট্রেশন অনুমোদন
         const [userCheck] = await connection.query(
-            `SELECT * FROM users WHERE id = ? FOR UPDATE`,
+            `SELECT * FROM users WHERE id = ? AND UPPER(status) = 'PENDING' FOR UPDATE`,
             [requestId]
         );
 
@@ -330,33 +331,47 @@ exports.approveRequest = async (req, res) => {
         if (connection) connection.release();
     }
 };
-
-// ৬. (অ্যাডমিন) আবেদন বাতিল বা রিজেক্ট করা
+// (অ্যাডমিন) আবেদন বাতিল বা রিজেক্ট করা
 exports.rejectRequest = async (req, res) => {
+    // প্যারামিটার থেকে আইডি রিসিভ করা (যেহেতু রাউটে :requestId আছে)
     const requestId = req.params.requestId || req.params.id;
-    const { note } = req.body;
+    const { note } = req.body || {};
 
     try {
+        // ১. প্রথমে চেক করবে এটি 'প্রোফাইল এডিট' রিকোয়েস্ট কিনা
+        const [editResult] = await db.query(
+            `UPDATE profile_edit_requests SET status = 'REJECTED', admin_note = ? 
+             WHERE id = ? AND UPPER(status) = 'PENDING'`,
+            [note || null, requestId]
+        );
+
+        if (editResult.affectedRows > 0) {
+            return res.json({ 
+                success: true, 
+                message: "প্রোফাইল পরিবর্তনের আবেদনটি সফলভাবে বাতিল করা হয়েছে।" 
+            });
+        }
+
+        // ২. যদি প্রোফাইল এডিট রিকোয়েস্ট না হয়, তবে এটি 'নতুন রেজিস্ট্রেশন' হিসেবে রিজেক্ট করবে
         const [userResult] = await db.query(
-            `UPDATE users SET status = 'REJECTED' WHERE id = ? AND UPPER(status) = 'PENDING' AND (is_deleted = 0 OR is_deleted IS NULL)`,
+            `UPDATE users SET status = 'REJECTED' 
+             WHERE id = ? AND UPPER(status) = 'PENDING'`,
             [requestId]
         );
 
         if (userResult.affectedRows > 0) {
-            return res.json({ success: true, message: "নতুন ইউজারের রেজিস্ট্রেশন আবেদন বাতিল করা হয়েছে।" });
+            return res.json({ 
+                success: true, 
+                message: "নতুন ইউজারের রেজিস্ট্রেশন সফলভাবে বাতিল করা হয়েছে।" 
+            });
         }
 
-        const [result] = await db.query(
-            `UPDATE profile_edit_requests SET status = 'REJECTED', admin_note = ? 
-             WHERE (id = ? OR user_id = ?) AND UPPER(status) = 'PENDING' AND (is_deleted = 0 OR is_deleted IS NULL)`,
-            [note || null, requestId, requestId]
-        );
+        // যদি কোনো পেন্ডিং রিকোয়েস্টই না পাওয়া যায়
+        return res.status(404).json({ 
+            success: false, 
+            message: "আবেদনটি পাওয়া যায়নি অথবা ইতিমধ্যে প্রসেস করা হয়েছে।" 
+        });
 
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ success: false, message: "আবেদনটি পাওয়া যায়নি।" });
-        }
-
-        res.json({ success: true, message: "আবেদনের পরিবর্তনটি বাতিল করা হয়েছে।" });
     } catch (error) {
         console.error("rejectRequest Error:", error);
         res.status(500).json({ success: false, message: "সার্ভার সমস্যা: " + error.message });
