@@ -21,5 +21,5 @@ router.get('/profile', verifyToken, authController.getProfile); // <-- এই �
 router.put('/profile/update', verifyToken, authController.updateProfile);
 router.post('/profile/change-password', verifyToken, authController.changePassword);
 router.post('/profile/request-family-member', verifyToken, authController.requestFamilyMember);
-
+router.get('/societies', authController.getActiveSocieties);
 module.exports = router;

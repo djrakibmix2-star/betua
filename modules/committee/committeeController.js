@@ -39,7 +39,7 @@ async function getCommitteePermissions(userId, userRole) {
     return { can_create: 0, can_edit: 0, can_delete: 0, canCreate: 0, canEdit: 0, canDelete: 0 };
 }
 
-// ১. সক্রিয় কমিটি সদস্যদের তালিকা ফেচ করা (এডিটরের নামসহ)
+// ১. সক্রিয় কমিটি সদস্যদের তালিকা ফেচ করা (ফ্যামিলি মেম্বার ও এডিটরের নামসহ)
 exports.getAllCommitteeMembers = async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.userId;
@@ -50,6 +50,7 @@ exports.getAllCommitteeMembers = async (req, res) => {
                 c.id,
                 COALESCE(c.user_id, '') AS family_code,
                 c.user_id,
+                c.family_member_id,
                 c.member_name,
                 c.designation,
                 c.phone,
@@ -59,10 +60,12 @@ exports.getAllCommitteeMembers = async (req, res) => {
                 c.created_at,
                 c.updated_at,
                 u.name AS registered_user_name,
+                ufm.member_name AS family_sub_member_name,
                 up.name AS updated_by_name,
                 up.name AS updatedByName
             FROM committee_members c
             LEFT JOIN users u ON c.user_id = u.id
+            LEFT JOIN user_family_members ufm ON c.family_member_id = ufm.id
             LEFT JOIN users up ON c.updated_by = up.id
             WHERE c.is_deleted = 0 OR c.is_deleted IS NULL
             ORDER BY c.display_order ASC, c.id ASC
@@ -83,7 +86,7 @@ exports.getAllCommitteeMembers = async (req, res) => {
     }
 };
 
-// ২. ৫ সংখ্যার ফ্যামিলি কোড দিয়ে পরিবার ও সকল সদস্যের তথ্য অনুসন্ধান
+// ২. ফ্যামিলি কোড দিয়ে পরিবার ও সদস্যদের তথ্য অনুসন্ধান (user_family_members সাপোর্টসহ)
 exports.lookupFamilyByCode = async (req, res) => {
     try {
         const rawCode = req.params.code;
@@ -94,15 +97,21 @@ exports.lookupFamilyByCode = async (req, res) => {
             });
         }
 
-        let parsedNum = parseInt(rawCode);
-        let possibleId = parsedNum > 10000 ? (parsedNum % 10000) : parsedNum;
+        const codeStr = rawCode.toString().trim();
+        let possibleId;
+        // ৫ বা তার বেশি ডিজিট হলে শেষ ৪ সংখ্যা ইউজার আইডি, অন্যথায় পুরো সংখ্যাটি
+        if (codeStr.length >= 5) {
+            possibleId = parseInt(codeStr.slice(-4), 10);
+        } else {
+            possibleId = parseInt(codeStr, 10);
+        }
 
         const [users] = await db.query(
             `SELECT id, name, phone, father_name, para_name 
              FROM users 
              WHERE id = ? OR phone = ? 
              LIMIT 1`,
-            [possibleId, rawCode]
+            [possibleId, codeStr]
         );
 
         if (users.length === 0) {
@@ -115,65 +124,43 @@ exports.lookupFamilyByCode = async (req, res) => {
         const familyHead = users[0];
         const memberList = [];
 
+        // মূল সদস্য (পরিবার প্রধান)
         memberList.push({
+            user_id: familyHead.id,
+            family_member_id: null,
             id: familyHead.id,
             name: familyHead.name,
-            phone: familyHead.phone,
-            relation: 'পরিবার প্রধান'
+            phone: familyHead.phone || '',
+            relation: 'পরিবার প্রধান',
+            para_name: familyHead.para_name
         });
 
-        let foundSubMembers = false;
-
+        // পরিবারের অন্যান্য সদস্যরা (user_family_members টেবিল থেকে)
         try {
             const [famRows] = await db.query(`
-                SELECT id, 
-                       COALESCE(name, member_name) AS member_name, 
-                       COALESCE(relation, 'সদস্য') AS relation,
-                       COALESCE(phone, '') AS phone
-                FROM family_members 
-                WHERE user_id = ? OR family_head_id = ? OR family_code = ?
-            `, [familyHead.id, familyHead.id, rawCode]);
+                SELECT id, member_name, relation, phone
+                FROM user_family_members 
+                WHERE user_id = ? AND status = 'ACTIVE'
+            `, [familyHead.id]);
 
-            if (famRows.length > 0) {
-                famRows.forEach(fm => {
-                    memberList.push({
-                        id: fm.id,
-                        name: fm.member_name,
-                        phone: fm.phone || familyHead.phone,
-                        relation: fm.relation || 'সদস্য'
-                    });
+            famRows.forEach(fm => {
+                memberList.push({
+                    user_id: familyHead.id,
+                    family_member_id: fm.id,
+                    id: fm.id,
+                    name: fm.member_name,
+                    phone: fm.phone || familyHead.phone || '', // নিজস্ব ফোন না থাকলে বাবার ফোন
+                    relation: fm.relation || 'সদস্য',
+                    para_name: familyHead.para_name
                 });
-                foundSubMembers = true;
-            }
-        } catch (err1) {}
-
-        if (!foundSubMembers) {
-            try {
-                const [memRows] = await db.query(`
-                    SELECT id, 
-                           COALESCE(name, member_name) AS member_name, 
-                           COALESCE(relation, 'সদস্য') AS relation,
-                           COALESCE(phone, '') AS phone
-                    FROM members 
-                    WHERE user_id = ? OR head_id = ? OR family_id = ?
-                `, [familyHead.id, familyHead.id, familyHead.id]);
-
-                if (memRows.length > 0) {
-                    memRows.forEach(m => {
-                        memberList.push({
-                            id: m.id,
-                            name: m.member_name,
-                            phone: m.phone || familyHead.phone,
-                            relation: m.relation || 'সদস্য'
-                        });
-                    });
-                }
-            } catch (err2) {}
+            });
+        } catch (err) {
+            console.warn("Error fetching family members:", err.message);
         }
 
         return res.status(200).json({
             success: true,
-            family_code: String(10000 + familyHead.id),
+            family_code: codeStr,
             head_name: familyHead.name,
             phone: familyHead.phone,
             para_name: familyHead.para_name,
@@ -187,7 +174,7 @@ exports.lookupFamilyByCode = async (req, res) => {
     }
 };
 
-// ৩. নতুন কমিটি সদস্য যোগ করা
+// ৩. নতুন কমিটি সদস্য যোগ করা (পরিবার প্রধান কিংবা পরিবারের সদস্য উভয়ই সাপোর্ট করবে)
 exports.createCommitteeMember = async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.userId;
@@ -204,8 +191,8 @@ exports.createCommitteeMember = async (req, res) => {
         const { 
             userId: uId, 
             user_id, 
-            familyCode, 
-            family_code, 
+            family_member_id,
+            familyMemberId,
             memberName, 
             member_name, 
             name,
@@ -222,7 +209,7 @@ exports.createCommitteeMember = async (req, res) => {
 
         const finalName = memberName || member_name || name;
         const finalDesignation = designation || role;
-        const finalPhone = phone;
+        const finalPhone = phone ? String(phone).trim() : '';
 
         if (!finalName || !finalDesignation) {
             return res.status(400).json({
@@ -231,41 +218,23 @@ exports.createCommitteeMember = async (req, res) => {
             });
         }
 
-        let rawLinkedId = uId || user_id || familyCode || family_code || null;
-        let linkedUserId = null;
-        if (rawLinkedId) {
-            let parsed = parseInt(rawLinkedId);
-            if (parsed > 10000) parsed = parsed % 10000;
-            linkedUserId = parsed > 0 ? parsed : null;
-        }
+        let linkedUserId = uId || user_id || null;
+        let linkedFamilyMemberId = family_member_id || familyMemberId || null;
 
         const pName = paraName || para_name || null;
         const sTerm = sessionTerm || session_term || '২০২৬-২০২৮';
         const dOrder = parseInt(displayOrder || display_order || 0) || 0;
-        const ph = finalPhone ? String(finalPhone).trim() : '';
 
-        let insertId = null;
-
-        try {
-            const [result] = await db.query(`
-                INSERT INTO committee_members 
-                    (user_id, member_name, designation, phone, para_name, session_term, display_order, is_deleted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-            `, [linkedUserId, finalName.trim(), finalDesignation.trim(), ph, pName, sTerm, dOrder]);
-            insertId = result.insertId;
-        } catch (e1) {
-            const [result2] = await db.query(`
-                INSERT INTO committee_members 
-                    (user_id, member_name, designation, phone, para_name, session_term, display_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            `, [linkedUserId, finalName.trim(), finalDesignation.trim(), ph, pName, sTerm, dOrder]);
-            insertId = result2.insertId;
-        }
+        const [result] = await db.query(`
+            INSERT INTO committee_members 
+                (user_id, family_member_id, member_name, designation, phone, para_name, session_term, display_order, created_by, is_deleted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        `, [linkedUserId, linkedFamilyMemberId, finalName.trim(), finalDesignation.trim(), finalPhone, pName, sTerm, dOrder, userId]);
 
         return res.status(201).json({
             success: true,
             message: 'কমিটির সদস্য সফলভাবে যুক্ত করা হয়েছে।',
-            memberId: insertId
+            memberId: result.insertId
         });
     } catch (error) {
         console.error("createCommitteeMember Error:", error);
@@ -276,7 +245,7 @@ exports.createCommitteeMember = async (req, res) => {
     }
 };
 
-// ৪. কমিটি সদস্যের তথ্য আপডেট করা (এডিটরের নাম ও সময় সেভ করা)
+// ৪. কমিটি সদস্যের তথ্য আপডেট করা
 exports.updateCommitteeMember = async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.userId;
@@ -294,8 +263,8 @@ exports.updateCommitteeMember = async (req, res) => {
         const { 
             userId: uId, 
             user_id, 
-            familyCode, 
-            family_code, 
+            family_member_id,
+            familyMemberId,
             memberName, 
             member_name, 
             name,
@@ -310,23 +279,18 @@ exports.updateCommitteeMember = async (req, res) => {
             display_order 
         } = req.body;
 
-        let rawLinkedId = uId || user_id || familyCode || family_code || null;
-        let linkedUserId = null;
-        if (rawLinkedId) {
-            let parsed = parseInt(rawLinkedId);
-            if (parsed > 10000) parsed = parsed % 10000;
-            linkedUserId = parsed > 0 ? parsed : null;
-        }
-
         const finalName = memberName || member_name || name;
         const finalDesignation = designation || role;
         const pName = paraName || para_name || null;
         const sTerm = sessionTerm || session_term || '২০২৬-২০২৮';
         const dOrder = displayOrder !== undefined ? parseInt(displayOrder) : (display_order !== undefined ? parseInt(display_order) : null);
+        const linkedUserId = uId || user_id || null;
+        const linkedFamilyMemberId = family_member_id || familyMemberId || null;
 
         const query = `
             UPDATE committee_members 
-            SET user_id = COALESCE(?, user_id), 
+            SET user_id = COALESCE(?, user_id),
+                family_member_id = COALESCE(?, family_member_id),
                 member_name = COALESCE(?, member_name), 
                 designation = COALESCE(?, designation), 
                 phone = COALESCE(?, phone), 
@@ -339,6 +303,7 @@ exports.updateCommitteeMember = async (req, res) => {
         `;
         const [result] = await db.query(query, [
             linkedUserId,
+            linkedFamilyMemberId,
             finalName,
             finalDesignation,
             phone,
@@ -368,7 +333,7 @@ exports.updateCommitteeMember = async (req, res) => {
     }
 };
 
-// ৫. কমিটি সদস্য সফট ডিলিট / ট্র্যাশ বক্স এবং মূল অ্যাডমিনের পার্মানেন্ট ডিলিট
+// ৫. কমিটি সদস্য সফট ডিলিট ও পার্মানেন্ট ডিলিট
 exports.deleteCommitteeMember = async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.userId;
@@ -384,16 +349,14 @@ exports.deleteCommitteeMember = async (req, res) => {
 
         const { id } = req.params;
 
-        // যদি মূল ADMIN হয় এবং রিকোয়েস্টে permanent=true থাকে, তবে ডাটাবেজ থেকে স্থায়ীভাবে মুছে যাবে
         if (userRole === 'ADMIN' && req.query.permanent === 'true') {
             const [result] = await db.query('DELETE FROM committee_members WHERE id = ?', [id]);
             if (result.affectedRows === 0) {
                 return res.status(404).json({ success: false, message: 'সদস্যের তথ্য খুঁজে পাওয়া যায়নি।' });
             }
-            return res.status(200).json({ success: true, message: 'সদস্যকে ডাটাবেজ থেকে স্থায়ীভাবে মুছে ফেলা হয়েছে।' });
+            return res.status(200).json({ success: true, message: 'সদস্যকে ডাটাবেজ থেকে স্থায়ীভাবে মুছে ফেলা হয়েছে।' });
         }
 
-        // সফট ডিলিট (ট্র্যাশ বক্সে পাঠানো)
         const [result] = await db.query(
             'UPDATE committee_members SET is_deleted = 1, deleted_by = ? WHERE id = ?',
             [userId, id]
@@ -418,7 +381,7 @@ exports.deleteCommitteeMember = async (req, res) => {
     }
 };
 
-// ৬. মূল অ্যাডমিনের জন্য ট্র্যাশ বক্সের কমিটি সদস্য তালিকা দেখার এপিআই
+// ৬. ট্র্যাশ বক্সের কমিটি সদস্য তালিকা
 exports.getTrashCommitteeMembers = async (req, res) => {
     try {
         const [members] = await db.query(`
@@ -434,7 +397,7 @@ exports.getTrashCommitteeMembers = async (req, res) => {
     }
 };
 
-// ৭. ট্র্যাশ থেকে কমিটি সদস্য পুনরুদ্ধার (Restore) করা
+// ৭. ট্র্যাশ থেকে কমিটি সদস্য পুনরুদ্ধার
 exports.restoreCommitteeMember = async (req, res) => {
     try {
         const { id } = req.params;

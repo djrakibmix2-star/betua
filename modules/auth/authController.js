@@ -2,23 +2,42 @@ const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// ১. রেজিস্ট্রেশন (পরিবারের সদস্যদের নাম ও সম্পর্কসহ - স্ট্যাটাস অবশ্যই PENDING থাকবে)
+// ০. সকল সক্রিয় সমাজ/মসজিদের তালিকা (পাবলিক API - লগইন ড্রপডাউনের জন্য)
+exports.getActiveSocieties = async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            "SELECT id, name, branch_code, address FROM societies WHERE is_active = 1 ORDER BY id ASC"
+        );
+        res.json({
+            success: true,
+            societies: rows
+        });
+    } catch (err) {
+        console.error("getActiveSocieties Error:", err);
+        res.status(500).json({ success: false, message: 'মসজিদ/সমাজের তালিকা লোড ব্যর্থ: ' + err.message });
+    }
+};
+
+// ১. রেজিস্ট্রেশন (পরিবারের সদস্যদের নাম ও সম্পর্কসহ - স্ট্যাটাস PENDING থাকবে)
 exports.register = async (req, res) => {
     const connection = await db.getConnection();
     try {
         await connection.beginTransaction();
 
-        const { name, phone, password, para_name, family_member_count, father_name, family_members, age, gender } = req.body;
+        const { name, phone, password, para_name, family_member_count, father_name, family_members, age, gender, society_id } = req.body;
 
         if (!name || !phone || !password) {
             await connection.release();
             return res.status(400).json({ success: false, message: 'নাম, মোবাইল নম্বর এবং পাসওয়ার্ড দেওয়া বাধ্যতামূলক।' });
         }
 
-        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ?', [phone.trim()]);
+        const targetSocietyId = parseInt(society_id, 10) || 1;
+
+        // নির্দিষ্ট সমাজে এই নম্বরে একাউন্ট আছে কি না চেক
+        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ? AND society_id = ?', [phone.trim(), targetSocietyId]);
         if (existing.length > 0) {
             await connection.release();
-            return res.status(400).json({ success: false, message: 'এই নম্বর দিয়ে ইতিমধ্যে একাউন্ট রয়েছে।' });
+            return res.status(400).json({ success: false, message: 'এই সমাজে উক্ত নম্বর দিয়ে ইতিমধ্যে একাউন্ট রয়েছে।' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -27,11 +46,11 @@ exports.register = async (req, res) => {
         const membersList = Array.isArray(family_members) ? family_members.filter(m => m && typeof m === 'string' && m.trim() !== '') : [];
         const familyCount = membersList.length > 0 ? membersList.length : (parseInt(family_member_count) || 1);
 
-        // ইউজার ইনসার্ট (স্ট্যাটাস PENDING)
+        // ইউজার ইনসার্ট (society_id সহ)
         const [userResult] = await connection.query(
-            `INSERT INTO users (name, father_name, phone, password_hash, para_name, family_members_count, base_role, status, age, gender)
-             VALUES (?, ?, ?, ?, ?, ?, 'MEMBER', 'PENDING', ?, ?)`,
-            [name.trim(), father_name ? father_name.trim() : null, phone.trim(), hashedPassword, para_name ? para_name.trim() : null, familyCount, age || 0, gender || 'MALE']
+            `INSERT INTO users (name, father_name, phone, password_hash, para_name, family_members_count, base_role, status, age, gender, society_id)
+             VALUES (?, ?, ?, ?, ?, ?, 'MEMBER', 'PENDING', ?, ?, ?)`,
+            [name.trim(), father_name ? father_name.trim() : null, phone.trim(), hashedPassword, para_name ? para_name.trim() : null, familyCount, age || 0, gender || 'MALE', targetSocietyId]
         );
 
         const userId = userResult.insertId;
@@ -62,22 +81,30 @@ exports.register = async (req, res) => {
     }
 };
 
-// ২. লগইন (ডুয়েল সাপোর্ট: ফোন বা ইমেইল এবং স্ট্যাটাস চেক)
+// ২. লগইন (ডুয়েল সাপোর্ট: ফোন বা ইমেইল, নির্দিষ্ট সমাজ/মসজিদ এবং স্ট্যাটাস চেক)
 exports.login = async (req, res) => {
     try {
-        const { phone, email, identifier, password } = req.body;
+        const { phone, email, identifier, password, society_id } = req.body;
         const loginId = identifier || phone || email;
 
         if (!loginId || !password) {
             return res.status(400).json({ success: false, message: 'লগইন তথ্য ও পাসওয়ার্ড প্রদান করুন।' });
         }
 
+        if (!society_id) {
+            return res.status(400).json({ success: false, message: 'সমাজ বা মসজিদ নির্বাচন করা আবশ্যক।' });
+        }
+
         const isEmail = loginId.includes('@');
-        const query = isEmail ? 'SELECT * FROM users WHERE email = ?' : 'SELECT * FROM users WHERE phone = ?';
+        const query = isEmail 
+            ? 'SELECT * FROM users WHERE email = ? AND society_id = ?' 
+            : 'SELECT * FROM users WHERE phone = ? AND society_id = ?';
         
-        const [rows] = await db.query(query, [loginId.trim()]);
+        const [rows] = await db.query(query, [loginId.trim(), parseInt(society_id, 10)]);
         
-        if (rows.length === 0) return res.status(400).json({ success: false, message: 'নম্বরে বা ইমেইলে কোনো একাউন্ট নেই।' });
+        if (rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'উক্ত সমাজে এই নম্বরে বা ইমেইলে কোনো একাউন্ট নেই।' });
+        }
         const user = rows[0];
 
         // ইউজার স্ট্যাটাস ACTIVE না হলে লগইন ব্লক থাকবে
@@ -96,7 +123,12 @@ exports.login = async (req, res) => {
         const familyMembersData = familyRows.map(row => `${row.member_name} (${row.relation})`);
 
         const role = user.base_role || 'MEMBER';
-        const token = jwt.sign({ id: user.id, phone: user.phone, role: role }, process.env.JWT_SECRET || 'somaj_secret_key_123', { expiresIn: '30d' });
+        // টোকেনে society_id অন্তর্ভুক্ত করা হলো
+        const token = jwt.sign(
+            { id: user.id, phone: user.phone, role: role, society_id: user.society_id }, 
+            process.env.JWT_SECRET || 'somaj_secret_key_123', 
+            { expiresIn: '30d' }
+        );
 
         res.json({
             success: true,
@@ -111,6 +143,7 @@ exports.login = async (req, res) => {
                 role: role,
                 paraName: user.para_name,
                 familyCode: user.id,
+                societyId: user.society_id,
                 age: user.age,
                 gender: user.gender,
                 familyMemberCount: familyRows.length > 0 ? familyRows.length : (user.family_members_count || 1),
@@ -122,7 +155,7 @@ exports.login = async (req, res) => {
     }
 };
 
-// ৩. প্রোফাইল আপডেট (এডিট করলে স্ট্যাটাস স্বয়ংক্রিয়ভাবে PENDING হয়ে যাবে)
+// ৩. প্রোফাইল আপডেট (এডিট করলে স্ট্যাটাস স্বয়ংক্রিয়ভাবে PENDING হয়ে যাবে)
 exports.updateProfile = async (req, res) => {
     try {
         const userId = req.user?.id;
@@ -130,7 +163,6 @@ exports.updateProfile = async (req, res) => {
 
         if (!name) return res.status(400).json({ success: false, message: 'নাম খালি রাখা যাবে না।' });
 
-        // স্ট্যাটাস 'PENDING' করে দেওয়া হলো যাতে অ্যাডমিন লিস্টে দেখা যায়
         await db.query(
             `UPDATE users SET name = ?, father_name = ?, para_name = ?, age = ?, gender = ?, status = 'PENDING' WHERE id = ?`,
             [
@@ -158,7 +190,7 @@ exports.requestFamilyMember = async (req, res) => {
         const userId = req.user?.id;
         const { requested_count } = req.body;
 
-        const count = parseInt(requested_count) || 0;
+        const count = parseInt(requested_count, 10) || 0;
         if (count <= 0) {
             return res.status(400).json({ success: false, message: 'সঠিক সদস্য সংখ্যা প্রদান করুন।' });
         }
@@ -229,6 +261,7 @@ exports.getProfile = async (req, res) => {
                 role: role,
                 paraName: u.para_name,
                 familyCode: u.id,
+                societyId: u.society_id,
                 age: u.age,
                 gender: u.gender,
                 familyMemberCount: familyRows.length > 0 ? familyRows.length : (u.family_members_count || 1),
@@ -240,7 +273,7 @@ exports.getProfile = async (req, res) => {
     }
 };
 
-// ৭. ফ্যামিলি কোড দিয়ে পরিবারের সদস্যদের লিস্ট খোঁজা (সাব-রেজিস্ট্রেশনের জন্য নতুন যুক্ত)
+// ৭. ফ্যামিলি কোড দিয়ে পরিবারের সদস্যদের লিস্ট খোঁজা
 exports.getFamilyMembersByCode = async (req, res) => {
     try {
         const { family_code } = req.body; 
@@ -267,7 +300,7 @@ exports.getFamilyMembersByCode = async (req, res) => {
     }
 };
 
-// ৮. সাব-রেজিস্ট্রেশন বা প্রোফাইল ক্লেইম করা (নতুন যুক্ত)
+// ৮. সাব-রেজিস্ট্রেশন বা প্রোফাইল ক্লেইম করা
 exports.claimSubProfile = async (req, res) => {
     const connection = await db.getConnection();
     try {
@@ -279,10 +312,19 @@ exports.claimSubProfile = async (req, res) => {
             return res.status(400).json({ success: false, message: 'প্রয়োজনীয় তথ্য অসম্পূর্ণ।' });
         }
 
-        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ?', [phone.trim()]);
+        // প্যারেন্ট ইউজারের society_id ও para_name নেওয়া
+        const [parentUser] = await connection.query('SELECT para_name, society_id FROM users WHERE id = ?', [parent_id]);
+        if (parentUser.length === 0) {
+            await connection.release();
+            return res.status(404).json({ success: false, message: 'মূল ব্যবহারকারী পাওয়া যায়নি।' });
+        }
+        const paraName = parentUser[0].para_name;
+        const societyId = parentUser[0].society_id || 1;
+
+        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ? AND society_id = ?', [phone.trim(), societyId]);
         if (existing.length > 0) {
             await connection.release();
-            return res.status(400).json({ success: false, message: 'এই মোবাইল নম্বরটি ইতিমধ্যে ব্যবহৃত হচ্ছে।' });
+            return res.status(400).json({ success: false, message: 'এই মোবাইল নম্বরটি এই সমাজে ইতিমধ্যে ব্যবহৃত হচ্ছে।' });
         }
 
         const [memberData] = await connection.query('SELECT member_name, age FROM user_family_members WHERE id = ? AND user_id = ?', [member_id, parent_id]);
@@ -293,14 +335,11 @@ exports.claimSubProfile = async (req, res) => {
         
         const member = memberData[0];
         const hashedPassword = await bcrypt.hash(password, 10);
-        
-        const [parentUser] = await connection.query('SELECT para_name FROM users WHERE id = ?', [parent_id]);
-        const paraName = parentUser.length > 0 ? parentUser[0].para_name : null;
 
         const [newUser] = await connection.query(
-            `INSERT INTO users (name, phone, email, password_hash, para_name, base_role, status, age, gender)
-             VALUES (?, ?, ?, ?, ?, 'MEMBER', 'PENDING', ?, ?)`,
-            [member.member_name, phone.trim(), email ? email.trim() : null, hashedPassword, paraName, member.age || age || 0, gender || 'MALE']
+            `INSERT INTO users (name, phone, email, password_hash, para_name, base_role, status, age, gender, society_id)
+             VALUES (?, ?, ?, ?, ?, 'MEMBER', 'PENDING', ?, ?, ?)`,
+            [member.member_name, phone.trim(), email ? email.trim() : null, hashedPassword, paraName, member.age || age || 0, gender || 'MALE', societyId]
         );
 
         const newUserId = newUser.insertId;
@@ -321,7 +360,7 @@ exports.claimSubProfile = async (req, res) => {
     }
 };
 
-// ৯. নির্বাচনের জন্য সদস্য ও তার পরিবার খোঁজার লজিক (১০, ১১, ১২... প্রিফিক্স এবং শেষ ৪ ডিজিট আসল আইডি)
+// ৯. নির্বাচনের জন্য সদস্য ও তার পরিবার খোঁজার লজিক
 exports.getElectionMemberByCode = async (req, res) => {
     try {
         const { family_code } = req.body; 
@@ -331,30 +370,23 @@ exports.getElectionMemberByCode = async (req, res) => {
         }
 
         const codeStr = family_code.toString().trim();
-        
-        // কোডটি অন্তত ৫ বা ৬ ডিজিটের হতে হবে (কমপক্ষে ২ ডিজিট প্রিফিক্স + ৪ ডিজিট আইডি)
         if (codeStr.length < 5) {
             return res.status(400).json({ success: false, message: 'সঠিক ফ্যামিলি কোড প্রদান করুন।' });
         }
 
-        // শেষ ৪ ডিজিটকে আসল యూজার আইডি (realId) হিসেবে আলাদা করা
         const realIdStr = codeStr.slice(-4);
         const realId = parseInt(realIdStr, 10);
 
-        // ১. প্রথমে মূল সদস্যকে (Head/User) users টেবিল থেকে খুঁজবো
         const [users] = await db.query('SELECT id, name as member_name, "মূল সদস্য" as relation, 0 as age FROM users WHERE id = ?', [realId]);
-        
         if (users.length === 0) {
             return res.status(404).json({ success: false, message: 'এই কোডের কোনো সদস্য পাওয়া যায়নি।' });
         }
 
-        // ২. এবার তার পরিবারের অন্যান্য সদস্যদের user_family_members থেকে আনবো
         const [familyMembers] = await db.query(
             'SELECT id, member_name, relation, age FROM user_family_members WHERE user_id = ? AND status = "ACTIVE"',
             [realId]
         );
 
-        // মূল সদস্য এবং পরিবারের বাকি সদস্যদের একসাথে যুক্ত করা
         const allMembers = [...users, ...familyMembers];
 
         res.json({ 
@@ -362,8 +394,65 @@ exports.getElectionMemberByCode = async (req, res) => {
             message: "সদস্য পাওয়া গেছে", 
             members: allMembers 
         });
-
     } catch (err) {
         res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
     } 
+};
+
+// ১০. কমিটির জন্য মেম্বার কোড দিয়ে ইউজার ও তার পরিবারের সদস্যদের সার্চ করা
+exports.getCommitteeMemberByCode = async (req, res) => {
+    try {
+        const { member_code } = req.body;
+
+        if (!member_code) {
+            return res.status(400).json({ success: false, message: 'সদস্য কোড প্রদান করুন।' });
+        }
+
+        const codeStr = member_code.toString().trim();
+        let targetUserId;
+        if (codeStr.length >= 5) {
+            targetUserId = parseInt(codeStr.slice(-4), 10);
+        } else {
+            targetUserId = parseInt(codeStr, 10);
+        }
+
+        const [users] = await db.query(
+            `SELECT id as user_id, NULL as family_member_id, name, phone, para_name, 'পরিবার প্রধান' as relation 
+             FROM users WHERE id = ?`, 
+            [targetUserId]
+        );
+
+        if (users.length === 0) {
+            return res.status(404).json({ success: false, message: 'এই কোডের কোনো সদস্য খুঁজে পাওয়া যায়নি।' });
+        }
+
+        const headUser = users[0];
+
+        const [familyRows] = await db.query(
+            `SELECT id as family_member_id, member_name as name, relation, phone 
+             FROM user_family_members 
+             WHERE user_id = ? AND status = 'ACTIVE'`,
+            [targetUserId]
+        );
+
+        const familyFormatted = familyRows.map(member => ({
+            user_id: headUser.user_id,
+            family_member_id: member.family_member_id,
+            name: member.name,
+            phone: member.phone || headUser.phone,
+            para_name: headUser.para_name,
+            relation: member.relation || 'সদস্য'
+        }));
+
+        const eligibleMembers = [headUser, ...familyFormatted];
+
+        res.json({
+            success: true,
+            message: 'সদস্য তথ্য সফলভাবে পাওয়া গেছে।',
+            family_code: codeStr,
+            members: eligibleMembers
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
+    }
 };

@@ -34,7 +34,7 @@ async function getMemberPermissions(userId, userRole) {
     return { can_create: 0, can_edit: 0, can_delete: 0 };
 }
 
-// ১. সক্রিয় সদস্য তালিকা দেখা (ট্র্যাশে থাকা বাদ দিয়ে এবং এডিটরের নামসহ)
+// ১. সক্রিয় সদস্য তালিকা দেখা (পরিবার প্রধান নিজে কমিটিতে থাকলে কেবল তখনই ট্যাগ আসবে)
 exports.getAllMembers = async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.userId;
@@ -43,6 +43,7 @@ exports.getAllMembers = async (req, res) => {
 
         const hiddenUserIds = [0]; 
 
+        // ফোন নম্বরের বদলে শুধুমাত্র সরাসরি ইউজার অ্যাকাউন্টের মাধ্যমে কমিটি পদবী চেক করা হয়েছে
         const query = `
             SELECT 
                 u.id, 
@@ -53,20 +54,23 @@ exports.getAllMembers = async (req, res) => {
                 COALESCE(u.family_members_count, 1) AS familyMembersCount, 
                 u.base_role AS role, 
                 u.status, 
-                u.created_at,
-                u.updated_at,
-                up.name AS updated_by_name,
-                up.name AS updatedByName,
-                CONCAT('', (10000 + u.id)) AS family_code,
-                cm.designation AS committee_designation,
-                CASE WHEN cm.id IS NOT NULL THEN 1 ELSE 0 END AS is_committee_member
+                u.created_at, 
+                u.updated_at, 
+                up.name AS updated_by_name, 
+                up.name AS updatedByName, 
+                CONCAT('', (10000 + u.id)) AS family_code, 
+                GROUP_CONCAT(DISTINCT cm_head.designation SEPARATOR ', ') AS committee_designation, 
+                CASE WHEN COUNT(cm_head.id) > 0 THEN 1 ELSE 0 END AS is_committee_member
             FROM users u
-            LEFT JOIN committee_members cm ON (u.id = cm.user_id OR u.phone = cm.phone)
+            LEFT JOIN committee_members cm_head 
+                ON u.id = cm_head.user_id 
+               AND (cm_head.family_member_id IS NULL OR cm_head.family_member_id = 0)
             LEFT JOIN users up ON u.updated_by = up.id
             WHERE UPPER(COALESCE(u.base_role, 'MEMBER')) NOT IN ('ADMIN', 'SUB_ADMIN')
               AND u.id NOT IN (?)
               AND (u.is_deleted = 0 OR u.is_deleted IS NULL)
               AND u.status = 'ACTIVE'
+            GROUP BY u.id
             ORDER BY u.name ASC
         `;
 
@@ -78,18 +82,34 @@ exports.getAllMembers = async (req, res) => {
             let familyRows = [];
             try {
                 const [fRows] = await db.query(
-                    `SELECT id, user_id, member_name, relation, age 
-                     FROM user_family_members 
-                     WHERE user_id IN (?)`,
+                    `SELECT 
+                        ufm.id, 
+                        ufm.user_id, 
+                        ufm.member_name, 
+                        ufm.relation, 
+                        ufm.age,
+                        cm_sub.designation AS committee_designation
+                     FROM user_family_members ufm
+                     LEFT JOIN committee_members cm_sub 
+                        ON (ufm.id = cm_sub.family_member_id OR (ufm.member_name = cm_sub.name AND ufm.user_id = cm_sub.user_id))
+                     WHERE ufm.user_id IN (?)`,
                     [userIds]
                 );
                 familyRows = fRows;
             } catch (err) {
                 try {
                     const [altRows] = await db.query(
-                        `SELECT id, user_id, member_name, relation, age 
-                         FROM family_members 
-                         WHERE user_id IN (?)`,
+                        `SELECT 
+                            fm.id, 
+                            fm.user_id, 
+                            fm.member_name, 
+                            fm.relation, 
+                            fm.age,
+                            cm_sub.designation AS committee_designation
+                         FROM family_members fm
+                         LEFT JOIN committee_members cm_sub 
+                            ON (fm.id = cm_sub.family_member_id OR (fm.member_name = cm_sub.name AND fm.user_id = cm_sub.user_id))
+                         WHERE fm.user_id IN (?)`,
                         [userIds]
                     );
                     familyRows = altRows;
@@ -106,7 +126,9 @@ exports.getAllMembers = async (req, res) => {
                     member_name: row.member_name || '',
                     memberName: row.member_name || '',
                     relation: row.relation || 'সদস্য',
-                    age: row.age ? parseInt(row.age) : null
+                    age: row.age ? parseInt(row.age) : null,
+                    committee_designation: row.committee_designation || null,
+                    is_committee_member: row.committee_designation ? 1 : 0
                 });
             });
 
@@ -152,15 +174,18 @@ exports.getMemberDetailsById = async (req, res) => {
                 COALESCE(u.family_members_count, 1) AS family_members_count, 
                 u.base_role, 
                 u.status, 
-                u.created_at,
-                u.updated_at,
-                up.name AS updated_by_name,
-                CONCAT('', (10000 + u.id)) AS family_code,
-                cm.designation AS committee_designation
+                u.created_at, 
+                u.updated_at, 
+                up.name AS updated_by_name, 
+                CONCAT('', (10000 + u.id)) AS family_code, 
+                GROUP_CONCAT(DISTINCT cm_head.designation SEPARATOR ', ') AS committee_designation
              FROM users u
-             LEFT JOIN committee_members cm ON (u.id = cm.user_id OR u.phone = cm.phone)
+             LEFT JOIN committee_members cm_head 
+                ON u.id = cm_head.user_id 
+               AND (cm_head.family_member_id IS NULL OR cm_head.family_member_id = 0)
              LEFT JOIN users up ON u.updated_by = up.id
-             WHERE u.id = ? AND (u.is_deleted = 0 OR u.is_deleted IS NULL)`,
+             WHERE u.id = ? AND (u.is_deleted = 0 OR u.is_deleted IS NULL)
+             GROUP BY u.id`,
             [memberId]
         );
 
@@ -173,7 +198,16 @@ exports.getMemberDetailsById = async (req, res) => {
         let familyMembers = [];
         try {
             const [fRows] = await db.query(
-                `SELECT id, member_name, relation, age FROM user_family_members WHERE user_id = ?`,
+                `SELECT 
+                    ufm.id, 
+                    ufm.member_name, 
+                    ufm.relation, 
+                    ufm.age,
+                    cm_sub.designation AS committee_designation
+                 FROM user_family_members ufm
+                 LEFT JOIN committee_members cm_sub 
+                    ON (ufm.id = cm_sub.family_member_id OR (ufm.member_name = cm_sub.name AND ufm.user_id = cm_sub.user_id))
+                 WHERE ufm.user_id = ?`,
                 [memberId]
             );
             familyMembers = fRows;
@@ -268,7 +302,7 @@ exports.adminUpdateMember = async (req, res) => {
                 finalRole, 
                 status, 
                 familyCount, 
-                requesterId,
+                requesterId, 
                 memberId
             ]
         );
@@ -416,12 +450,11 @@ exports.adminAddMember = async (req, res) => {
 
         const [existing] = await db.query('SELECT id FROM users WHERE phone = ?', [phone.trim()]);
         if (existing.length > 0) {
-            return res.status(400).json({ success: false, message: 'এই মোবাইল নম্বর দিয়ে ইতিমধ্যে একটি অ্যাকাউন্ট রয়েছে।' });
+            return res.status(400).json({ success: false, message: 'এই মোবাইল নম্বর দিয়ে ইতিমধ্যে একটি অ্যাকাউন্ট রয়েছে।' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // এখানে password-এর পরিবর্তে password_hash দেওয়া হলো
         await db.query(
             `INSERT INTO users (name, phone, password_hash, father_name, para_name, base_role, status, created_by, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 0)`,
             [name.trim(), phone.trim(), hashedPassword, father_name?.trim() || null, para_name?.trim() || null, role || 'MEMBER', userId]

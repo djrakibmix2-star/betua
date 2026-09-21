@@ -58,5 +58,6 @@ router.post('/vote', electionController.castVote);
 
 // ----------------- ৫. জেনেরিক আইডি রুট (সর্বশেষ থাকবে) -----------------
 router.get('/:id', electionController.getElectionDetails);
+router.delete('/:id', electionController.deleteElection); // <-- নতুন যোগ করা হয়েছে
 
 module.exports = router;

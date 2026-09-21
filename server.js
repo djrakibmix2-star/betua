@@ -56,6 +56,13 @@ try {
 const islamicRoutes = require('./modules/question/islamicRoutes');
 app.use('/api/islamic-qa', islamicRoutes);
 
+
+// অন্যান্য রাউটগুলোর সাথে এই রাউটটি ডিক্লেয়ার করুন
+const committeeQaRoutes = require('./modules/question/committeeQaRoutes'); // আপনার ফোল্ডার পাথ অনুযায়ী মিলিয়ে নিবেন
+
+// অ্যাপে রাউটটি রেজিস্টার করুন
+app.use('/api/committee-qa', committeeQaRoutes);
+
 // ৩. বেসিক টেস্ট রুট
 app.get('/', (req, res) => {
     res.json({ success: true, message: 'Somaj App Backend API is running successfully!' });
