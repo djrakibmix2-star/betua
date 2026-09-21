@@ -63,6 +63,10 @@ const committeeQaRoutes = require('./modules/question/committeeQaRoutes'); // �
 // অ্যাপে রাউটটি রেজিস্টার করুন
 app.use('/api/committee-qa', committeeQaRoutes);
 
+// === এই লাইনটি নতুন করে যুক্ত করুন ===
+// (নোট: './modules/update/updateRoutes' পাথটি আপনার ফোল্ডারের নামের সাথে মিলিয়ে নেবেন)
+app.use('/api/update', require('./modules/update/updateRoutes')); 
+//
 // ৩. বেসিক টেস্ট রুট
 app.get('/', (req, res) => {
     res.json({ success: true, message: 'Somaj App Backend API is running successfully!' });
