@@ -175,10 +175,12 @@ exports.deleteCommitteeQuestionThread = async (req, res) => {
     try {
         const questionId = req.params.id || req.params.questionId;
         const userId = req.user?.id || req.user?.userId;
-        const userRole = req.user?.role || req.user?.base_role || 'MEMBER';
+        const userRole = (req.user?.role || req.user?.base_role || 'MEMBER').toUpperCase();
 
         const perms = await getCommitteeQaPermissions(userId, userRole);
-        if (perms.can_delete !== 1 && userRole.toUpperCase() !== 'ADMIN') {
+        
+        // ADMIN এবং SUPERADMIN બંને চেক করা হলো
+        if (perms.can_delete !== 1 && !['ADMIN', 'SUPERADMIN'].includes(userRole)) {
             return res.status(403).json({ success: false, message: 'মুছে ফেলার অনুমতি নেই।' });
         }
 

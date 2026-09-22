@@ -66,11 +66,14 @@ app.use('/api/committee-qa', committeeQaRoutes);
 // === এই লাইনটি নতুন করে যুক্ত করুন ===
 // (নোট: './modules/update/updateRoutes' পাথটি আপনার ফোল্ডারের নামের সাথে মিলিয়ে নেবেন)
 app.use('/api/update', require('./modules/update/updateRoutes')); 
-//
+
 // ৩. বেসিক টেস্ট রুট
 app.get('/', (req, res) => {
     res.json({ success: true, message: 'Somaj App Backend API is running successfully!' });
 });
+
+// === এই নতুন লাইনটি যুক্ত করুন ===
+app.use('/api/committee-qa', require('./modules/committeeQA/committeeQaRoutes'));
 
 // ৪. সার্ভার স্টার্ট
 const PORT = process.env.PORT || 5000;
