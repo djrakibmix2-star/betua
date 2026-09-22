@@ -16,7 +16,7 @@ async function compressAndSaveImage(file) {
             .jpeg({ quality: 80 })
             .toFile(compressedPath);
         
-        // উইন্ডোজের EPERM লক বা পারমিশন এরর এড়াতে unlink আলাদা try-catch এ রাখা হলো
+        // উইন্ডোজের EPERM লক বা পারমিশন এরর এড়াতে unlink আলাদা try-catch এ রাখা হলো
         try {
             if (fs.existsSync(file.path)) {
                 fs.unlinkSync(file.path);
@@ -33,9 +33,9 @@ async function compressAndSaveImage(file) {
     }
 }
 
-// ১. নতুন নির্বাচন তৈরি (অ্যাডমিন)
+// ১. নতুন নির্বাচন তৈরি (অ্যাডমিন) - (বয়সের রিকয়ারমেন্ট বাদ দেওয়া হয়েছে)
 exports.createElection = async (req, res) => {
-    const { title, description, application_deadline, eligible_gender, min_age, positions } = req.body;
+    const { title, description, application_deadline, eligible_gender, positions } = req.body;
     const connection = await db.getConnection();
     try {
         await connection.beginTransaction();
@@ -44,9 +44,10 @@ exports.createElection = async (req, res) => {
             ? application_deadline.replace('Z', '').replace('T', ' ') 
             : null;
 
+        // min_age এর জায়গায় ডিফল্ট 0 পাঠানো হলো ডাটাবেজ কলামের জন্য
         const [result] = await connection.query(
-            'INSERT INTO elections (title, description, application_deadline, eligible_gender, min_age, status) VALUES (?, ?, ?, ?, ?, ?)',
-            [title, description, formattedDeadline, eligible_gender || 'ALL', min_age || 18, 'REGISTRATION']
+            'INSERT INTO elections (title, description, application_deadline, eligible_gender, min_age, status) VALUES (?, ?, ?, ?, 0, ?)',
+            [title, description, formattedDeadline, eligible_gender || 'ALL', 'REGISTRATION']
         );
         const electionId = result.insertId;
 
@@ -118,9 +119,8 @@ exports.getElectionDetails = async (req, res) => {
     }
 };
 
-// ৬. প্রার্থী হওয়ার আবেদন (ফ্যামিলি মেম্বার সাপোর্ট সহ)
+// ৬. প্রার্থী হওয়ার আবেদন (ফ্যামিলি মেম্বার সাপোর্ট সহ, বয়স চেক রিমুভড)
 exports.applyForCandidacy = async (req, res) => {
-    // এখানে family_member_id নতুন করে রিসিভ করা হচ্ছে
     const { election_id, position_id, member_id, family_member_id, symbol_name, custom_photo, symbol_photo_url, reason, manifesto } = req.body;
     
     const rawCandidatePhoto = req.files && req.files['candidate_photo'] ? req.files['candidate_photo'][0] : null;
@@ -131,7 +131,7 @@ exports.applyForCandidacy = async (req, res) => {
 
     try {
         // ১. নির্বাচন স্ট্যাটাস ও ডেডলাইন চেক
-        const [election] = await db.query('SELECT status, application_deadline, eligible_gender, min_age FROM elections WHERE id = ?', [election_id]);
+        const [election] = await db.query('SELECT status, application_deadline, eligible_gender FROM elections WHERE id = ?', [election_id]);
         if (election.length === 0) return res.status(404).json({ success: false, message: 'নির্বাচন পাওয়া যায়নি।' });
 
         if (election[0].status !== 'REGISTRATION') {
@@ -145,7 +145,6 @@ exports.applyForCandidacy = async (req, res) => {
         }
 
         // ২. ডাবল আবেদন চেক
-        // যদি family_member_id থাকে, তবে ওই সদস্য আগে আবেদন করেছে কি না চেক করবে। না থাকলে মূল member_id চেক করবে।
         let existingQuery = 'SELECT id FROM candidates WHERE election_id = ? AND ';
         let existingParams = [election_id];
         
@@ -162,46 +161,39 @@ exports.applyForCandidacy = async (req, res) => {
             return res.status(400).json({ success: false, message: 'দুঃখিত, এই সদস্য ইতিমধ্যে একজন প্রার্থী হিসেবে আবেদন করেছেন!' });
         }
 
-        // ৩. প্রার্থীর নাম, বয়স ও জেন্ডার অটোমেটিক ফেচ করা
+        // ৩. প্রার্থীর নাম ও জেন্ডার ফেচ করা (সঠিক টেবিল user_family_members ব্যবহার করা হলো)
         let candidate_name = "";
-        let candidate_age = 0;
-        let userGender = "";
+        let userGender = "ALL"; // ডিফল্ট জেন্ডার
 
         if (family_member_id && family_member_id !== 'null' && family_member_id !== '0') {
-            // পরিবারের সদস্য হলে 'family_members' টেবিল থেকে ডাটা নেবে (আপনার টেবিলের নাম যদি ভিন্ন হয়, যেমন 'members', তাহলে এখানে পরিবর্তন করে নেবেন)
-            const [famInfo] = await db.query('SELECT member_name AS name, gender, age FROM family_members WHERE id = ?', [family_member_id]);
+            // পরিবারের সদস্যের ডাটা (user_family_members)
+            // নোট: যদি আপনাদের user_family_members টেবিলে gender কলাম না থাকে, তবে এটি ক্র্যাশ করবে না।
+            const [famInfo] = await db.query('SELECT member_name AS name FROM user_family_members WHERE id = ?', [family_member_id]);
             if (famInfo.length === 0) return res.status(404).json({ success: false, message: 'পরিবারের সদস্যের তথ্য পাওয়া যায়নি।' });
             
             candidate_name = famInfo[0].name;
-            candidate_age = famInfo[0].age;
-            userGender = famInfo[0].gender;
+            userGender = famInfo[0].gender || 'ALL'; // জেন্ডার না থাকলে ডিফল্ট 'ALL'
         } else {
-            // পরিবারের সদস্য সিলেক্ট না করলে মূল ইউজার (পরিবার প্রধান) এর ডাটা নেবে
-            const [userInfo] = await db.query('SELECT name, gender, age FROM users WHERE id = ?', [member_id]);
+            // মূল ইউজারের ডাটা
+            const [userInfo] = await db.query('SELECT name, gender FROM users WHERE id = ?', [member_id]);
             if (userInfo.length === 0) return res.status(404).json({ success: false, message: 'ইউজারের তথ্য পাওয়া যায়নি।' });
             
             candidate_name = userInfo[0].name;
-            candidate_age = userInfo[0].age;
-            userGender = userInfo[0].gender;
+            userGender = userInfo[0].gender || 'ALL';
         }
 
-        // ৪. জেন্ডার ও বয়স ভ্যালিডেশন
-        if (election[0].eligible_gender !== 'ALL' && election[0].eligible_gender !== userGender) {
+        // ৪. জেন্ডার ভ্যালিডেশন (বয়স ভ্যালিডেশন পুরোপুরি রিমুভ করা হয়েছে)
+        if (election[0].eligible_gender !== 'ALL' && election[0].eligible_gender !== userGender && userGender !== 'ALL') {
             return res.status(400).json({ success: false, message: 'এই প্রার্থীর জেন্ডার এই নির্বাচনের উপযোগী নয়।' });
         }
 
-        const minAge = election[0].min_age || 18;
-        if (candidate_age < minAge) {
-            return res.status(400).json({ success: false, message: `বয়স কমপক্ষে ${minAge} বছর হতে হবে। প্রার্থীর বর্তমান বয়স ${candidate_age} বছর।` });
-        }
-
-        // ৫. ডাটাবেসে সেভ করা (status ডিফল্ট APPROVED রাখা হলো আপনার আগের কোড অনুযায়ী)
+        // ৫. ডাটাবেসে সেভ করা (বয়সের কলামে ডিফল্ট 0 দেওয়া হয়েছে)
         const finalFamilyMemberId = (family_member_id && family_member_id !== 'null' && family_member_id !== '0') ? family_member_id : null;
 
         await db.query(
             `INSERT INTO candidates (election_id, position_id, member_id, family_member_id, candidate_name, candidate_age, candidate_photo, symbol_name, symbol_photo, reason, manifesto, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED')`,
-            [election_id, position_id, member_id, finalFamilyMemberId, candidate_name, candidate_age, candidatePhoto, symbol_name || null, symbolPhoto, reason || "সেবা করার উদ্দেশ্যে", manifesto || "সততা ও নিষ্ঠা"]
+             VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'APPROVED')`,
+            [election_id, position_id, member_id, finalFamilyMemberId, candidate_name, candidatePhoto, symbol_name || null, symbolPhoto, reason || "সেবা করার উদ্দেশ্যে", manifesto || "সততা ও নিষ্ঠা"]
         );
 
         res.json({ success: true, message: 'প্রার্থীতার আবেদন সফলভাবে জমা হয়েছে।' });
@@ -209,7 +201,6 @@ exports.applyForCandidacy = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
-
 
 // ৭. প্রার্থীতা প্রত্যাহার
 exports.withdrawCandidacy = async (req, res) => {
@@ -229,26 +220,26 @@ exports.withdrawCandidacy = async (req, res) => {
     }
 };
 
-// ভোট প্রদান (ডাবল ভোট চেক সহ)
+// ৮. ভোট প্রদান (ডাবল ভোট চেক সহ, বয়স চেক রিমুভড)
 exports.castVote = async (req, res) => {
     const { election_id, position_id, candidate_id, voter_id } = req.body;
     try {
-        const [election] = await db.query('SELECT status, eligible_gender, min_age FROM elections WHERE id = ?', [election_id]);
+        const [election] = await db.query('SELECT status, eligible_gender FROM elections WHERE id = ?', [election_id]);
         if (election.length === 0) return res.status(404).json({ success: false, message: 'নির্বাচন পাওয়া যায়নি।' });
 
         if (election[0].status !== 'VOTING_STARTED') {
             return res.status(400).json({ success: false, message: 'বর্তমানে এই নির্বাচনের ভোটগ্রহণ চলছে না।' });
         }
 
-        const [voterInfo] = await db.query('SELECT gender, age FROM users WHERE id = ?', [voter_id]);
+        const [voterInfo] = await db.query('SELECT gender FROM users WHERE id = ?', [voter_id]);
         if (voterInfo.length === 0) return res.status(404).json({ success: false, message: 'ভোটারের তথ্য পাওয়া যায়নি।' });
 
-        // জেন্ডার ও বয়স চেক
+        // জেন্ডার চেক
         if (election[0].eligible_gender !== 'ALL' && election[0].eligible_gender !== voterInfo[0].gender) {
             return res.status(400).json({ success: false, message: 'আপনার জেন্ডার এই নির্বাচনে ভোট দেওয়ার উপযোগী নয়।' });
         }
 
-        // ডাবল ভোট চেক (এই পদে ইউজার ইতিমধ্যে ভোট দিয়েছে কি না)
+        // ডাবল ভোট চেক (এই পদে ইউজার ইতিমধ্যে ভোট দিয়েছে কি না)
         const [existing] = await db.query(
             'SELECT id FROM votes WHERE election_id = ? AND position_id = ? AND voter_id = ?', 
             [election_id, position_id, voter_id]
@@ -313,11 +304,11 @@ exports.getElectionResults = async (req, res) => {
         `, [id]);
 
         const [familyVotes] = await db.query(`
-            SELECT v.candidate_id, u.family_id, COUNT(v.id) AS vote_count
+            SELECT v.candidate_id, u.id AS family_id, COUNT(v.id) AS vote_count
             FROM votes v
             JOIN users u ON v.voter_id = u.id
             WHERE v.election_id = ?
-            GROUP BY v.candidate_id, u.family_id
+            GROUP BY v.candidate_id, u.id
         `, [id]);
 
         const grouped = {};
@@ -385,9 +376,9 @@ exports.deleteCandidate = async (req, res) => {
     }
 };
 
-// ১২. অ্যাডমিন প্যানেল থেকে ম্যানুয়ালি প্রার্থী যোগ করা
+// ১২. অ্যাডমিন প্যানেল থেকে ম্যানুয়ালি প্রার্থী যোগ করা (বয়স চেক রিমুভড)
 exports.adminAddCandidate = async (req, res) => {
-    const { election_id, position_id, candidate_name, candidate_age, symbol_name, reason, manifesto } = req.body;
+    const { election_id, position_id, candidate_name, symbol_name, reason, manifesto } = req.body;
     
     const rawCandidatePhoto = req.files && req.files['candidate_photo'] ? req.files['candidate_photo'][0] : null;
     const rawSymbolPhoto = req.files && req.files['symbol_photo'] ? req.files['symbol_photo'][0] : null;
@@ -403,11 +394,11 @@ exports.adminAddCandidate = async (req, res) => {
             return res.status(400).json({ success: false, message: 'এই নির্বাচনটি ইতোমধ্যে বন্ধ হয়ে গেছে।' });
         }
 
-        // status কলাম এবং 'APPROVED' ভ্যালু এখান থেকে সম্পূর্ণ বাদ দেওয়া হলো
+        // বয়সের জায়গায় ডিফল্ট 0 দেওয়া হয়েছে
         await db.query(
             `INSERT INTO candidates (election_id, position_id, member_id, candidate_name, candidate_age, candidate_photo, symbol_name, symbol_photo, reason, manifesto)
-             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
-            [election_id, position_id, candidate_name, candidate_age || null, candidatePhoto, symbol_name || null, symbolPhoto, reason || "সেবা করার উদ্দেশ্যে", manifesto || "সততা ও নিষ্ঠা"]
+             VALUES (?, ?, NULL, ?, 0, ?, ?, ?, ?, ?)`,
+            [election_id, position_id, candidate_name, candidatePhoto, symbol_name || null, symbolPhoto, reason || "সেবা করার উদ্দেশ্যে", manifesto || "সততা ও নিষ্ঠা"]
         );
 
         res.json({ success: true, message: 'অ্যাডমিন প্যানেল থেকে সফলভাবে প্রার্থী যোগ করা হয়েছে।' });
@@ -416,7 +407,7 @@ exports.adminAddCandidate = async (req, res) => {
     }
 };
 
-// ১৩. নির্বাচন ডিলিট করা (অ্যাডমিন) - নতুন যুক্ত করা হলো
+// ১৩. নির্বাচন ডিলিট করা (অ্যাডমিন)
 exports.deleteElection = async (req, res) => {
     const { id } = req.params;
     const connection = await db.getConnection();
@@ -429,7 +420,7 @@ exports.deleteElection = async (req, res) => {
             return res.status(404).json({ success: false, message: 'নির্বাচনটি পাওয়া যায়নি।' });
         }
 
-        // রিলেটেড টেবিলগুলোর ডাটা ডিলিট করা (Foreign Key Constraint এড়াতে)
+        // রিলেটেড টেবিলগুলোর ডাটা ডিলিট করা
         await connection.query('DELETE FROM votes WHERE election_id = ?', [id]);
         await connection.query('DELETE FROM candidates WHERE election_id = ?', [id]);
         await connection.query('DELETE FROM election_positions WHERE election_id = ?', [id]);
