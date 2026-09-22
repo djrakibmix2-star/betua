@@ -1,472 +1,1034 @@
-const db = require('../../config/db');
-const bcrypt = require('bcrypt');
+package com.somaj.members
 
-// ইউজারের মেম্বার মডিউল পারমিশন হেল্পার
-async function getMemberPermissions(userId, userRole) {
-    if (userRole && ['ADMIN'].includes(userRole.toUpperCase())) {
-        return { can_create: 1, can_edit: 1, can_delete: 1 };
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FamilyRestroom
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.somaj.auth.UserProfile
+
+private val EmeraldPrimary = Color(0xFF0D532B)
+private val EmeraldSecondary = Color(0xFF1B5E20)
+private val EmeraldLight = Color(0xFFE8F5E9)
+private val GoldAccent = Color(0xFFD4AF37)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MemberListScreen(
+    user: UserProfile? = null,
+    viewModel: MemberViewModel = viewModel(),
+    onBackClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsState()
+    val serverAdminFlag by viewModel.isUserAdmin.collectAsState()
+    val isAdmin = serverAdminFlag || user?.role.equals("ADMIN", ignoreCase = true)
+    val permissions by viewModel.permissions.collectAsState()
+
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedPara by remember { mutableStateOf("সব পাড়া") }
+
+    var memberToDelete by remember { mutableStateOf<MemberItem?>(null) }
+    var memberToEdit by remember { mutableStateOf<MemberItem?>(null) }
+    var selectedFamilyProfile by remember { mutableStateOf<MemberItem?>(null) }
+    var showAddMemberDialog by remember { mutableStateOf(false) }
+
+    var isSearchExpanded by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(Unit) {
+        viewModel.fetchMembers(context)
     }
 
-    if (!userId) {
-        return { can_create: 0, can_edit: 0, can_delete: 0 };
-    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("সমাজ সদস্য তালিকা", fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "পিছনে যান")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.fetchMembers(context) }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "রিফ্রেশ")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = EmeraldPrimary,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White,
+                    actionIconContentColor = Color.White
+                )
+            )
+        },
+        floatingActionButton = {
+            if (isAdmin || permissions.canCreate == 1) {
+                FloatingActionButton(
+                    onClick = { showAddMemberDialog = true },
+                    containerColor = EmeraldPrimary,
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(imageVector = Icons.Filled.Add, contentDescription = "নতুন সদস্য যোগ করুন")
+                }
+            }
+        },
+        containerColor = Color(0xFFF7FAF8),
+        modifier = Modifier.imePadding()
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            when (val state = uiState) {
+                is MemberUiState.Loading -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = EmeraldPrimary)
+                    }
+                }
 
-    try {
-        const [rows] = await db.query(`
-            SELECT ufp.can_create, ufp.can_edit, ufp.can_delete 
-            FROM user_feature_permissions ufp
-            JOIN system_features sf ON ufp.feature_id = sf.id
-            WHERE ufp.user_id = ? AND sf.feature_key = 'members'
-            LIMIT 1
-        `, [userId]);
+                is MemberUiState.Error -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(text = state.message, color = Color.Red, fontSize = 14.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = { viewModel.fetchMembers(context) },
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                        ) {
+                            Text("পুনরায় চেষ্টা করুন")
+                        }
+                    }
+                }
 
-        if (rows.length > 0) {
-            return {
-                can_create: rows[0].can_create ? 1 : 0,
-                can_edit: rows[0].can_edit ? 1 : 0,
-                can_delete: rows[0].can_delete ? 1 : 0
-            };
+                is MemberUiState.Success -> {
+                    val allMembers = remember(state.members) {
+                        state.members.distinctBy { it.id }
+                    }
+
+                    val paraList = remember(allMembers) {
+                        listOf("সব পাড়া") + allMembers.mapNotNull { it.paraName }.distinct()
+                    }
+
+                    val filteredMembers = remember(searchQuery, selectedPara, allMembers) {
+                        allMembers.filter { member ->
+                            val memberName = member.name ?: ""
+                            val memberPhone = member.phone ?: ""
+                            val matchesSearch = memberName.contains(searchQuery, ignoreCase = true) ||
+                                    memberPhone.contains(searchQuery)
+                            val matchesPara = if (selectedPara == "সব পাড়া") true else member.paraName == selectedPara
+                            matchesSearch && matchesPara
+                        }
+                    }
+
+                    val totalFamilies = filteredMembers.size
+                    val totalIndividuals = filteredMembers.sumOf { member ->
+                        if (member.actualFamilyMembers.isNotEmpty()) {
+                            member.actualFamilyMembers.size + 1
+                        } else {
+                            member.familyMembersCount ?: 1
+                        }
+                    }
+
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = EmeraldPrimary),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceAround,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.FamilyRestroom, contentDescription = null, tint = GoldAccent, modifier = Modifier.size(24.dp))
+                                    Column(horizontalAlignment = Alignment.Start) {
+                                        Text(text = "মোট পরিবার", color = Color(0xCCFFFFFF), fontSize = 10.sp)
+                                        Text(text = "$totalFamilies টি", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .height(28.dp)
+                                        .width(1.dp)
+                                        .background(Color(0x40FFFFFF))
+                                )
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Group, contentDescription = null, tint = GoldAccent, modifier = Modifier.size(24.dp))
+                                    Column(horizontalAlignment = Alignment.Start) {
+                                        Text(text = "সর্বমোট সদস্য", color = Color(0xCCFFFFFF), fontSize = 10.sp)
+                                        Text(text = "$totalIndividuals জন", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 2.dp)
+                        ) {
+                            if (isSearchExpanded) {
+                                OutlinedTextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 8.dp)
+                                        .focusRequester(focusRequester),
+                                    placeholder = { Text("নাম বা মোবাইল নম্বর দিয়ে খুঁজুন...", fontSize = 13.sp) },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = EmeraldPrimary) },
+                                    trailingIcon = {
+                                        IconButton(onClick = {
+                                            isSearchExpanded = false
+                                            searchQuery = ""
+                                            keyboardController?.hide()
+                                        }) {
+                                            Icon(Icons.Default.Close, contentDescription = "বন্ধ করুন", tint = Color.Gray)
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = EmeraldPrimary,
+                                        unfocusedBorderColor = Color(0xFFC8E6C9),
+                                        focusedContainerColor = Color.White,
+                                        unfocusedContainerColor = Color.White
+                                    )
+                                )
+
+                                LaunchedEffect(Unit) {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                LazyRow(
+                                    modifier = Modifier.weight(1f),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(paraList) { para ->
+                                        FilterChip(
+                                            selected = (para == selectedPara),
+                                            onClick = { selectedPara = para },
+                                            label = { Text(para, fontSize = 12.sp) },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = EmeraldPrimary,
+                                                selectedLabelColor = Color.White
+                                            )
+                                        )
+                                    }
+                                }
+
+                                if (!isSearchExpanded) {
+                                    IconButton(
+                                        onClick = { isSearchExpanded = true },
+                                        modifier = Modifier
+                                            .padding(start = 8.dp)
+                                            .size(36.dp)
+                                            .clip(CircleShape)
+                                            .background(EmeraldLight)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Search,
+                                            contentDescription = "খুঁজুন",
+                                            tint = EmeraldPrimary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        if (filteredMembers.isEmpty()) {
+                            Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
+                                Text("কোনো সদস্য পাওয়া যায়নি", color = Color.Gray, fontSize = 14.sp)
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize().weight(1f),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                itemsIndexed(filteredMembers, key = { index, member -> "${member.id}_$index" }) { _, member ->
+                                    MemberCardItem(
+                                        member = member,
+                                        isAdmin = isAdmin,
+                                        onFamilyClick = { selectedFamilyProfile = member },
+                                        onCallClick = {
+                                            val phone = member.phone
+                                            if (!phone.isNullOrBlank()) {
+                                                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+                                                context.startActivity(intent)
+                                            } else {
+                                                Toast.makeText(context, "ফোন নম্বর উপলব্ধ নেই", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onEditClick = { memberToEdit = member },
+                                        onDeleteClick = { memberToDelete = member }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-    } catch (e) {
-        console.warn("Member permission check warning:", e.message);
     }
 
-    return { can_create: 0, can_edit: 0, can_delete: 0 };
+    if (showAddMemberDialog) {
+        AddMemberDialog(
+            primaryColor = EmeraldPrimary,
+            onDismiss = { showAddMemberDialog = false },
+            onConfirm = { name, phone, password, fatherName, paraName ->
+                viewModel.adminAddMember(
+                    context = context,
+                    name = name,
+                    phone = phone,
+                    password = password,
+                    fatherName = fatherName.ifBlank { null },
+                    paraName = paraName.ifBlank { null },
+                    role = "MEMBER"
+                ) {
+                    showAddMemberDialog = false
+                }
+            }
+        )
+    }
+
+    selectedFamilyProfile?.let { famMember ->
+        FamilyProfileDialog(
+            member = famMember,
+            onDismiss = { selectedFamilyProfile = null },
+            onCall = {
+                val phone = famMember.phone
+                if (!phone.isNullOrBlank()) {
+                    val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+                    context.startActivity(intent)
+                }
+            }
+        )
+    }
+
+    memberToEdit?.let { member ->
+        EditMemberDialog(
+            member = member,
+            onDismiss = { memberToEdit = null },
+            onConfirm = { name, phone, father, para, role, famMembers ->
+                viewModel.updateMember(context, member.id, name, phone, father, para, role, famMembers) {
+                    memberToEdit = null
+                }
+            }
+        )
+    }
+
+    memberToDelete?.let { member ->
+        AlertDialog(
+            onDismissRequest = { memberToDelete = null },
+            title = {
+                Text(
+                    text = "সদস্য ট্র্যাশ বক্সে পাঠাবেন?",
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFC62828),
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "আপনি কি নিশ্চিত যে \"${member.name ?: "এই সদস্য"}\"-কে ট্র্যাশ বক্সে পাঠাতে চান?",
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteMember(context, member.id) {
+                            memberToDelete = null
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                ) {
+                    Text("হ্যাঁ, পাঠান", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { memberToDelete = null }) {
+                    Text("বাতিল", color = Color.Gray)
+                }
+            }
+        )
+    }
 }
 
-// ১. সক্রিয় সদস্য তালিকা দেখা (পরিবার প্রধান নিজে কমিটিতে থাকলে কেবল তখনই ট্যাগ আসবে)
-exports.getAllMembers = async (req, res) => {
-    try {
-        const userId = req.user?.id || req.user?.userId;
-        const userRole = (req.user?.role || req.user?.base_role || '').toUpperCase();
-        const isAdmin = userRole === 'ADMIN';
+@Composable
+fun MemberCardItem(
+    member: MemberItem,
+    isAdmin: Boolean,
+    onFamilyClick: () -> Unit,
+    onCallClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
+    val displayName = member.name ?: "নাম প্রকাশে অনিচ্ছুক"
+    val isMemberAdmin = (member.baseRole ?: "").equals("ADMIN", ignoreCase = true)
 
-        const hiddenUserIds = [0]; 
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onFamilyClick() },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp),
+        border = BorderStroke(1.dp, Color(0xFFE8F5E9))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(EmeraldLight),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = displayName.take(1),
+                        color = EmeraldPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
 
-        const query = `
-            SELECT 
-                u.id, 
-                u.name, 
-                u.phone, 
-                u.father_name AS fatherName, 
-                u.para_name AS paraName, 
-                COALESCE(u.family_members_count, 1) AS familyMembersCount, 
-                u.base_role AS role, 
-                u.status, 
-                u.created_at, 
-                u.updated_at, 
-                up.name AS updated_by_name, 
-                up.name AS updatedByName, 
-                CONCAT('', (10000 + u.id)) AS family_code, 
-                GROUP_CONCAT(DISTINCT cm_head.designation SEPARATOR ', ') AS committee_designation, 
-                CASE WHEN COUNT(cm_head.id) > 0 THEN 1 ELSE 0 END AS is_committee_member
-            FROM users u
-            LEFT JOIN committee_members cm_head 
-                ON u.id = cm_head.user_id 
-               AND (cm_head.family_member_id IS NULL OR cm_head.family_member_id = 0)
-            LEFT JOIN users up ON u.updated_by = up.id
-            WHERE UPPER(COALESCE(u.base_role, 'MEMBER')) NOT IN ('ADMIN', 'SUB_ADMIN')
-              AND u.id NOT IN (?)
-              AND (u.is_deleted = 0 OR u.is_deleted IS NULL)
-              AND u.status = 'ACTIVE'
-            GROUP BY u.id
-            ORDER BY u.name ASC
-        `;
+                Spacer(modifier = Modifier.width(12.dp))
 
-        const [members] = await db.query(query, [hiddenUserIds]);
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            text = displayName,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF1B3820)
+                        )
+                        
+                        // শুধুমাত্র অ্যাডমিন হলে অ্যাডমিন ট্যাগ দেখাবে, অন্য কোনো ট্যাগ নয়
+                        if (isMemberAdmin) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFFFF3E0)
+                            ) {
+                                Text(
+                                    text = "এডমিন",
+                                    color = Color(0xFFE65100),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                )
+                            }
+                        }
+                    }
 
-        if (members.length > 0) {
-            // ডাটা মিসিং ঠেকাতে আইডিগুলোকে কমা দিয়ে যুক্ত করে স্ট্রিং বানানো হলো
-            const userIdsString = members.map(m => m.id).join(',');
+                    if (!member.fatherName.isNullOrBlank()) {
+                        Text(
+                            text = "পিতা: ${member.fatherName}",
+                            fontSize = 11.5.sp,
+                            color = Color.Gray
+                        )
+                    }
 
-            let familyRows = [];
-            try {
-                // সরাসরি স্ট্রিং বসিয়ে দেওয়া হলো, 'IN (?)' এর সমস্যা আর হবে না
-                const [fRows] = await db.query(
-                    `SELECT 
-                        ufm.id, 
-                        ufm.user_id, 
-                        ufm.member_name, 
-                        ufm.relation, 
-                        ufm.age,
-                        cm_sub.designation AS committee_designation
-                     FROM user_family_members ufm
-                     LEFT JOIN committee_members cm_sub 
-                        ON (ufm.id = cm_sub.family_member_id OR (ufm.member_name = cm_sub.name AND ufm.user_id = cm_sub.user_id))
-                     WHERE ufm.user_id IN (${userIdsString})`
-                );
-                familyRows = fRows;
-            } catch (err) {
-                try {
-                    const [altRows] = await db.query(
-                        `SELECT 
-                            fm.id, 
-                            fm.user_id, 
-                            fm.member_name, 
-                            fm.relation, 
-                            fm.age,
-                            cm_sub.designation AS committee_designation
-                         FROM family_members fm
-                         LEFT JOIN committee_members cm_sub 
-                            ON (fm.id = cm_sub.family_member_id OR (fm.member_name = cm_sub.name AND fm.user_id = cm_sub.user_id))
-                         WHERE fm.user_id IN (${userIdsString})`
-                    );
-                    familyRows = altRows;
-                } catch (e) {
-                    console.error("Family list load error:", e.message);
+                    Spacer(modifier = Modifier.height(3.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "পাড়া: ${member.paraName ?: "অনির্ধারিত"}",
+                            fontSize = 11.sp,
+                            color = EmeraldPrimary,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFFF1F5F9),
+                            modifier = Modifier.clickable { onFamilyClick() }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(Icons.Default.Group, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(11.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "পরিবার: ${member.familyMembersCount ?: 1} জন",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF334155)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onCallClick,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFE8F5E9))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Call,
+                            contentDescription = "কল করুন",
+                            tint = EmeraldPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    if (isAdmin) {
+                        IconButton(
+                            onClick = onEditClick,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE3F2FD))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "তথ্য পরিবর্তন",
+                                tint = Color(0xFF1565C0),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    if (isAdmin && !isMemberAdmin) {
+                        IconButton(
+                            onClick = onDeleteClick,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFFFEBEE))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "মুছুন",
+                                tint = Color(0xFFD32F2F),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
             }
 
-            const familyMap = {};
-            familyRows.forEach(row => {
-                if (!familyMap[row.user_id]) {
-                    familyMap[row.user_id] = [];
-                }
-                familyMap[row.user_id].push({
-                    id: row.id,
-                    member_name: row.member_name || '',
-                    memberName: row.member_name || '',
-                    relation: row.relation || 'সদস্য',
-                    age: row.age ? parseInt(row.age) : null,
-                    committee_designation: row.committee_designation || null,
-                    is_committee_member: row.committee_designation ? 1 : 0
-                });
-            });
-
-            members.forEach(m => {
-                const fam = familyMap[m.id] || [];
-                m.family_members = fam;
-                m.familyMembers = fam;
-                m.family_members_count = fam.length > 0 ? fam.length + 1 : (m.familyMembersCount || 1);
-            });
-        }
-
-        const permissions = await getMemberPermissions(userId, userRole);
-
-        res.json({
-            success: true,
-            isAdmin: isAdmin || permissions.can_edit === 1,
-            permissions,
-            message: 'সদস্যদের তালিকা সফলভাবে পাওয়া গেছে।',
-            count: members.length,
-            members: members
-        });
-    } catch (error) {
-        console.error("getAllMembers Error:", error);
-        res.status(500).json({
-            success: false,
-            message: 'সদস্যদের তালিকা আনতে সমস্যা হয়েছে: ' + error.message
-        });
-    }
-};
-
-// ২. নির্দিষ্ট সদস্যের বিস্তারিত তথ্য ফেচ করা (এডিটরের নামসহ)
-exports.getMemberDetailsById = async (req, res) => {
-    try {
-        const { memberId } = req.params;
-
-        const [users] = await db.query(
-            `SELECT 
-                u.id, 
-                u.name, 
-                u.phone, 
-                u.father_name, 
-                u.para_name, 
-                COALESCE(u.family_members_count, 1) AS family_members_count, 
-                u.base_role, 
-                u.status, 
-                u.created_at, 
-                u.updated_at, 
-                up.name AS updated_by_name, 
-                CONCAT('', (10000 + u.id)) AS family_code, 
-                GROUP_CONCAT(DISTINCT cm_head.designation SEPARATOR ', ') AS committee_designation
-             FROM users u
-             LEFT JOIN committee_members cm_head 
-                ON u.id = cm_head.user_id 
-               AND (cm_head.family_member_id IS NULL OR cm_head.family_member_id = 0)
-             LEFT JOIN users up ON u.updated_by = up.id
-             WHERE u.id = ? AND (u.is_deleted = 0 OR u.is_deleted IS NULL)
-             GROUP BY u.id`,
-            [memberId]
-        );
-
-        if (users.length === 0) {
-            return res.status(404).json({ success: false, message: 'সদস্য পাওয়া যায়নি।' });
-        }
-
-        const member = users[0];
-
-        let familyMembers = [];
-        try {
-            const [fRows] = await db.query(
-                `SELECT 
-                    ufm.id, 
-                    ufm.member_name, 
-                    ufm.relation, 
-                    ufm.age,
-                    cm_sub.designation AS committee_designation
-                 FROM user_family_members ufm
-                 LEFT JOIN committee_members cm_sub 
-                    ON (ufm.id = cm_sub.family_member_id OR (ufm.member_name = cm_sub.name AND ufm.user_id = cm_sub.user_id))
-                 WHERE ufm.user_id = ?`,
-                [memberId]
-            );
-            familyMembers = fRows;
-        } catch (e) {}
-
-        member.family_members = familyMembers;
-        member.familyMembers = familyMembers;
-
-        res.json({
-            success: true,
-            member: member
-        });
-    } catch (error) {
-        console.error("getMemberDetailsById Error:", error);
-        res.status(500).json({
-            success: false,
-            message: 'সদস্যের বিস্তারিত আনতে ব্যর্থ: ' + error.message
-        });
-    }
-};
-
-// ৩. সদস্যের তথ্য এডিট করা (এডিটরের নাম ও সময় সেভ করা)
-exports.adminUpdateMember = async (req, res) => {
-    let connection;
-    try {
-        const requesterId = req.user?.id || req.user?.userId;
-        const { memberId } = req.params;
-        const { name, phone, father_name, fatherName, para_name, paraName, base_role, role, status, family_members, familyMembers } = req.body;
-
-        connection = await db.getConnection();
-        await connection.beginTransaction();
-
-        const [requesterDbCheck] = await connection.query(`SELECT id, base_role FROM users WHERE id = ?`, [requesterId]);
-        const isActualAdmin = requesterDbCheck.length > 0 && ['ADMIN'].includes((requesterDbCheck[0].base_role || '').toUpperCase());
-
-        if (!isActualAdmin) {
-            await connection.rollback();
-            return res.status(403).json({
-                success: false,
-                message: 'অননুমোদিত অ্যাক্সেস! সদস্যের তথ্য পরিবর্তনের অধিকার শুধুমাত্র এডমিনের রয়েছে।'
-            });
-        }
-
-        const [existing] = await connection.query(`SELECT id, base_role FROM users WHERE id = ?`, [memberId]);
-        if (existing.length === 0) {
-            await connection.rollback();
-            return res.status(404).json({ success: false, message: 'সদস্য পাওয়া যায়নি।' });
-        }
-
-        const targetCurrentRole = (existing[0].base_role || '').toUpperCase();
-        const incomingRole = base_role || role;
-        const requestedNewRole = incomingRole ? incomingRole.toUpperCase() : targetCurrentRole;
-
-        if (parseInt(requesterId) === parseInt(memberId) && requestedNewRole !== 'ADMIN') {
-            await connection.rollback();
-            return res.status(403).json({
-                success: false,
-                message: 'এডমিন নিজের পদবী পরিবর্তন করতে পারবেন না।'
-            });
-        }
-
-        if (targetCurrentRole !== 'ADMIN' && requestedNewRole === 'ADMIN') {
-            await connection.rollback();
-            return res.status(403).json({
-                success: false,
-                message: 'নতুন কাউকে এডমিন পদে উন্নীত করা সম্পূর্ণ নিষিদ্ধ। সিস্টেমে এডমিন অ্যাকাউন্ট কেবল একটিই থাকবে।'
-            });
-        }
-
-        let finalRole = targetCurrentRole === 'ADMIN' ? 'ADMIN' : requestedNewRole;
-
-        const rawFam = family_members || familyMembers;
-        const membersList = Array.isArray(rawFam) ? rawFam : [];
-        const familyCount = membersList.length;
-
-        await connection.query(
-            `UPDATE users SET 
-             name = COALESCE(?, name),
-             phone = COALESCE(?, phone),
-             father_name = COALESCE(?, father_name),
-             para_name = COALESCE(?, para_name),
-             base_role = ?,
-             status = COALESCE(?, status),
-             family_members_count = ?,
-             updated_by = ?,
-             updated_at = NOW()
-             WHERE id = ?`,
-            [
-                name, 
-                phone, 
-                father_name || fatherName, 
-                para_name || paraName, 
-                finalRole, 
-                status, 
-                familyCount, 
-                requesterId, 
-                memberId
-            ]
-        );
-
-        try {
-            await connection.query(`DELETE FROM user_family_members WHERE user_id = ?`, [memberId]);
-            if (membersList.length > 0) {
-                const memberInserts = membersList.map(m => {
-                    const memberName = m.member_name || m.memberName || '';
-                    const memberRelation = m.relation || 'সদস্য';
-                    const memberAge = m.age ? parseInt(m.age) : null;
-
-                    return connection.query(
-                        `INSERT INTO user_family_members (user_id, member_name, relation, age, status) VALUES (?, ?, ?, ?, 'ACTIVE')`,
-                        [memberId, memberName, memberRelation, memberAge]
-                    );
-                });
-                await Promise.all(memberInserts);
+            val updatedByName = member.updatedByName
+            val updatedAt = member.updatedAt
+            if (!updatedByName.isNullOrEmpty()) {
+                HorizontalDivider(color = Color(0xFFF3F4F6), thickness = 0.5.dp)
+                Text(
+                    text = "সর্বশেষ সংশোধন: $updatedByName ${if (!updatedAt.isNullOrEmpty()) "- $updatedAt" else ""}",
+                    fontSize = 10.sp,
+                    color = Color(0xFFD32F2F),
+                    fontStyle = FontStyle.Italic
+                )
             }
-        } catch (e) {
-            console.warn("user_family_members sync warning:", e.message);
         }
-
-        await connection.commit();
-        res.json({
-            success: true,
-            message: 'সদস্যের তথ্য সফলভাবে আপডেট করা হয়েছে।'
-        });
-    } catch (error) {
-        if (connection) await connection.rollback();
-        console.error("adminUpdateMember Error:", error);
-        res.status(500).json({ success: false, message: 'সদস্য আপডেট করতে ব্যর্থ হয়েছে: ' + error.message });
-    } finally {
-        if (connection) connection.release();
     }
-};
+}
 
-// ৪. সদস্য সফট ডিলিট / ট্র্যাশ বক্স এবং মূল অ্যাডমিনের পার্মানেন্ট ডিলিট
-exports.deleteMemberPermanently = async (req, res) => {
-    let connection;
-    try {
-        const requesterId = req.user?.id || req.user?.userId;
-        const { memberId } = req.params;
-        const userRole = (req.user?.role || req.user?.base_role || '').toUpperCase();
+@Composable
+fun FamilyProfileDialog(
+    member: MemberItem,
+    onDismiss: () -> Unit,
+    onCall: () -> Unit
+) {
+    val familyList = member.actualFamilyMembers
+    val totalCount = member.familyMembersCount ?: (familyList.size + 1)
 
-        connection = await db.getConnection();
-        await connection.beginTransaction();
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Brush.linearGradient(listOf(EmeraldSecondary, EmeraldPrimary))),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Group, contentDescription = null, tint = GoldAccent, modifier = Modifier.size(20.dp))
+                        }
+                        Column {
+                            Text(
+                                text = member.name ?: "পরিবারের প্রোফাইল",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = EmeraldPrimary
+                            )
+                            Text(
+                                text = "ফ্যামিলি কোড: #${member.displayFamilyCode}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFB45309)
+                            )
+                        }
+                    }
 
-        const [requesterCheck] = await connection.query(`SELECT id, base_role FROM users WHERE id = ?`, [requesterId]);
-        if (requesterCheck.length === 0 || !['ADMIN'].includes((requesterCheck[0].base_role || '').toUpperCase())) {
-            await connection.rollback();
-            return res.status(403).json({ success: false, message: 'শুধুমাত্র এডমিন সদস্য ডিলিট করতে পারবেন।' });
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "বন্ধ করুন", tint = Color.Gray)
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFFE2E8F0))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAF8)),
+                    border = BorderStroke(1.dp, Color(0xFFC8E6C9))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = member.name ?: "নাম নেই",
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF1B3820)
+                            )
+                            // কোনো প্রকার কমিটির ট্যাগ এখানে আর থাকবে না
+                            Text(
+                                text = "পদবী: পরিবার প্রধান",
+                                fontSize = 11.sp,
+                                color = EmeraldPrimary,
+                                fontWeight = FontWeight.Medium
+                            )
+                            if (!member.phone.isNullOrBlank()) {
+                                Text(
+                                    text = "মোবাইল: ${member.phone}",
+                                    fontSize = 11.sp,
+                                    color = Color.DarkGray
+                                )
+                            }
+                            if (!member.paraName.isNullOrBlank()) {
+                                Text(
+                                    text = "পাড়া: ${member.paraName}",
+                                    fontSize = 10.5.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+
+                        if (!member.phone.isNullOrBlank()) {
+                            FilledTonalIconButton(
+                                onClick = onCall,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = "কল", tint = EmeraldPrimary, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+
+                Text(
+                    text = "পরিবারের অন্যান্য সদস্যবৃন্দ (মোট $totalCount জন):",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.DarkGray
+                )
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 240.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (familyList.isEmpty()) {
+                        item {
+                            Text(
+                                text = "পরিবারের নির্দিষ্ট সদস্যদের নাম এন্ট্রি করা নেই (মোট সংখ্যা: $totalCount জন)।",
+                                fontSize = 11.5.sp,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    } else {
+                        itemsIndexed(familyList) { index, fam ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                border = BorderStroke(0.8.dp, Color(0xFFE2E8F0))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFF1F5F9)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "${index + 1}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.DarkGray
+                                            )
+                                        }
+                                        Text(
+                                            text = fam.actualName.ifBlank { "সদস্য ${index + 1}" },
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF1E293B)
+                                        )
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFFF1F5F9)
+                                    ) {
+                                        Text(
+                                            text = fam.relation ?: "সদস্য",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF475569),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("ঠিক আছে", fontSize = 13.sp, color = Color.White)
+                }
+            }
         }
-
-        const [users] = await connection.query(`SELECT id, base_role FROM users WHERE id = ?`, [memberId]);
-        if (users.length === 0) {
-            await connection.rollback();
-            return res.status(404).json({ success: false, message: 'সদস্য পাওয়া যায়নি।' });
-        }
-
-        if ((users[0].base_role || '').toUpperCase() === 'ADMIN' || parseInt(requesterId) === parseInt(memberId)) {
-            await connection.rollback();
-            return res.status(400).json({ success: false, message: 'এডমিন অ্যাকাউন্ট মুছে ফেলা সম্ভব নয়।' });
-        }
-
-        if (userRole === 'ADMIN' && req.query.permanent === 'true') {
-            await connection.query(`SET FOREIGN_KEY_CHECKS = 0`);
-            try { await connection.query(`DELETE FROM user_family_members WHERE user_id = ?`, [memberId]); } catch (e) {}
-            try { await connection.query(`DELETE FROM profile_edit_requests WHERE user_id = ?`, [memberId]); } catch (e) {}
-            try { await connection.query(`DELETE FROM poll_votes WHERE user_id = ?`, [memberId]); } catch (e) {}
-            try { await connection.query(`DELETE FROM committee_members WHERE user_id = ?`, [memberId]); } catch (e) {}
-            try { await connection.query(`DELETE FROM users WHERE id = ?`, [memberId]); } catch (e) {}
-            await connection.query(`SET FOREIGN_KEY_CHECKS = 1`);
-            
-            await connection.commit();
-            return res.json({ success: true, message: 'সদস্যকে ডাটাবেজ থেকে স্থায়ীভাবে মুছে ফেলা হয়েছে।' });
-        }
-
-        await connection.query(
-            `UPDATE users SET is_deleted = 1, deleted_by = ? WHERE id = ?`,
-            [requesterId, memberId]
-        );
-
-        await connection.commit();
-        res.json({
-            success: true,
-            message: 'সদস্যকে সফলভাবে ডিলিট বক্সে পাঠানো হয়েছে।'
-        });
-    } catch (error) {
-        if (connection) {
-            try { await connection.query(`SET FOREIGN_KEY_CHECKS = 1`); } catch (e) {}
-            await connection.rollback();
-        }
-        console.error("deleteMemberPermanently Error:", error);
-        res.status(500).json({ success: false, message: 'ডিলিট করতে ব্যর্থ হয়েছে: ' + error.message });
-    } finally {
-        if (connection) connection.release();
     }
-};
+}
 
-// ৫. মূল অ্যাডমিনের জন্য ট্র্যাশ বক্সের সদস্য তালিকা দেখার এপিআই
-exports.getTrashMembers = async (req, res) => {
-    try {
-        const [members] = await db.query(`
-            SELECT u.id, u.name, u.phone, u.father_name, u.para_name, u.base_role,
-                   del.name as deleted_by_name 
-            FROM users u 
-            LEFT JOIN users del ON u.deleted_by = del.id 
-            WHERE u.is_deleted = 1 
-            ORDER BY u.id DESC
-        `);
-        res.json({ success: true, members });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
+@Composable
+fun EditMemberDialog(
+    member: MemberItem,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, phone: String?, father: String?, para: String?, role: String, famMembers: List<FamilyMemberPayload>) -> Unit
+) {
+    var name by remember { mutableStateOf(member.name ?: "") }
+    var phone by remember { mutableStateOf(member.phone ?: "") }
+    var fatherName by remember { mutableStateOf(member.fatherName ?: "") }
+    var paraName by remember { mutableStateOf(member.paraName ?: "") }
 
-// ৬. ট্র্যাশ থেকে সদস্য পুনরুদ্ধার (Restore) করা
-exports.restoreMember = async (req, res) => {
-    try {
-        const { id } = req.params;
-        await db.query(`UPDATE users SET is_deleted = 0, deleted_by = NULL WHERE id = ?`, [id]);
-        res.json({ success: true, message: 'সদস্যকে সফলভাবে পুনরুদ্ধার করা হয়েছে।' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
+    val isTargetAdmin = (member.baseRole ?: "").equals("ADMIN", ignoreCase = true)
+    var selectedRole by remember { mutableStateOf(if (isTargetAdmin) "ADMIN" else (member.baseRole ?: "MEMBER").uppercase()) }
 
-// ৭. অ্যাডমিন বা সাব-অ্যাডমিন কর্তৃক সরাসরি পাসওয়ার্ডসহ সদস্য যুক্ত করার এপিআই
-exports.adminAddMember = async (req, res) => {
-    try {
-        const userId = req.user?.id || req.user?.userId;
-        const userRole = (req.user?.role || req.user?.base_role || '').toUpperCase();
-        
-        const isPermitted = ['ADMIN', 'SUBADMIN'].includes(userRole) || req.user?.can_create === 1;
-        if (!isPermitted) {
-            return res.status(403).json({ success: false, message: 'আপনার সরাসরি সদস্য যুক্ত করার অনুমতি নেই।' });
+    val familyList = remember {
+        mutableStateListOf<Pair<String, String>>().apply {
+            val dbList = member.actualFamilyMembers
+            if (dbList.isNotEmpty()) {
+                dbList.forEach { f ->
+                    add(Pair(f.actualName, f.relation ?: "সদস্য"))
+                }
+            } else {
+                val count = member.familyMembersCount ?: 0
+                for (i in 1..count) {
+                    add(Pair("", "সদস্য"))
+                }
+            }
         }
-
-        const { name, phone, password, father_name, para_name, role } = req.body;
-
-        if (!name || !phone || !password) {
-            return res.status(400).json({ success: false, message: 'সদস্যের নাম, মোবাইল নম্বর এবং পাসওয়ার্ড বাধ্যতামূলক।' });
-        }
-
-        const [existing] = await db.query('SELECT id FROM users WHERE phone = ?', [phone.trim()]);
-        if (existing.length > 0) {
-            return res.status(400).json({ success: false, message: 'এই মোবাইল নম্বর দিয়ে ইতিমধ্যে একটি অ্যাকাউন্ট রয়েছে।' });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        await db.query(
-            `INSERT INTO users (name, phone, password_hash, father_name, para_name, base_role, status, created_by, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 0)`,
-            [name.trim(), phone.trim(), hashedPassword, father_name?.trim() || null, para_name?.trim() || null, role || 'MEMBER', userId]
-        );
-
-        res.json({
-            success: true,
-            message: 'সদস্য সফলভাবে যুক্ত করা হয়েছে এবং অ্যাকাউন্ট সচল করা হয়েছে।'
-        });
-    } catch (err) {
-        res.status(500).json({ success: false, message: 'সদস্য যুক্ত করতে ব্যর্থ: ' + err.message });
     }
-};
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            decorFitsSystemWindows = false,
+            usePlatformDefaultWidth = false
+        ),
+        modifier = Modifier
+            .fillMaxWidth(0.92f)
+            .imePadding(),
+        title = {
+            Text(text = "সদস্যের তথ্য পরিবর্তন", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = EmeraldPrimary)
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("সদস্যের নাম *") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it },
+                        label = { Text("মোবাইল নম্বর") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = fatherName,
+                        onValueChange = { fatherName = it },
+                        label = { Text("পিতার নাম") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = paraName,
+                        onValueChange = { paraName = it },
+                        label = { Text("পাড়া / মহল্লা") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item {
+                    Text(text = "সদস্যের পদবী / ভূমিকা:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    if (isTargetAdmin) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFFFF3E0),
+                            modifier = Modifier.padding(top = 4.dp)
+                        ) {
+                            Text(
+                                text = "এডমিন (এই অ্যাকাউন্টের পদবী অপরিবর্তনশীল)",
+                                color = Color(0xFFE65100),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("MEMBER" to "সাধারণ সদস্য", "COMMITTEE" to "কমিটি").forEach { (roleKey, roleLabel) ->
+                                FilterChip(
+                                    selected = selectedRole == roleKey,
+                                    onClick = { selectedRole = roleKey },
+                                    label = { Text(roleLabel, fontSize = 12.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = EmeraldPrimary,
+                                        selectedLabelColor = Color.White
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "পরিবারের অন্যান্য সদস্য (${familyList.size} জন):", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        IconButton(
+                            onClick = { familyList.add(Pair("", "সদস্য")) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "যোগ করুন", tint = EmeraldPrimary)
+                        }
+                    }
+                }
+
+                itemsIndexed(familyList) { index, itemPair ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = itemPair.first,
+                            onValueChange = { newName ->
+                                familyList[index] = Pair(newName, itemPair.second)
+                            },
+                            placeholder = { Text("সদস্যের নাম", fontSize = 11.sp) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        OutlinedTextField(
+                            value = itemPair.second,
+                            onValueChange = { newRelation ->
+                                familyList[index] = Pair(itemPair.first, newRelation)
+                            },
+                            placeholder = { Text("সম্পর্ক", fontSize = 11.sp) },
+                            singleLine = true,
+                            modifier = Modifier.width(90.dp)
+                        )
+
+                        IconButton(
+                            onClick = { familyList.removeAt(index) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "বাদ দিন", tint = Color.Red, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.isNotBlank()) {
+                        val payloadList = familyList
+                            .filter { it.first.isNotBlank() }
+                            .map { FamilyMemberPayload(memberName = it.first.trim(), relation = it.second.trim()) }
+
+                        onConfirm(
+                            name.trim(),
+                            phone.trim().ifBlank { null },
+                            fatherName.trim().ifBlank { null },
+                            paraName.trim().ifBlank { null },
+                            if (isTargetAdmin) "ADMIN" else selectedRole,
+                            payloadList
+                        )
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+            ) {
+                Text("সংরক্ষণ করুন", color = Color.White)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("বাতিল", color = Color.Gray) }
+        }
+    )
+}
