@@ -43,7 +43,6 @@ exports.getAllMembers = async (req, res) => {
 
         const hiddenUserIds = [0]; 
 
-        // ফোন নম্বরের বদলে শুধুমাত্র সরাসরি ইউজার অ্যাকাউন্টের মাধ্যমে কমিটি পদবী চেক করা হয়েছে
         const query = `
             SELECT 
                 u.id, 
@@ -77,10 +76,12 @@ exports.getAllMembers = async (req, res) => {
         const [members] = await db.query(query, [hiddenUserIds]);
 
         if (members.length > 0) {
-            const userIds = members.map(m => m.id);
+            // ডাটা মিসিং ঠেকাতে আইডিগুলোকে কমা দিয়ে যুক্ত করে স্ট্রিং বানানো হলো
+            const userIdsString = members.map(m => m.id).join(',');
 
             let familyRows = [];
             try {
+                // সরাসরি স্ট্রিং বসিয়ে দেওয়া হলো, 'IN (?)' এর সমস্যা আর হবে না
                 const [fRows] = await db.query(
                     `SELECT 
                         ufm.id, 
@@ -92,8 +93,7 @@ exports.getAllMembers = async (req, res) => {
                      FROM user_family_members ufm
                      LEFT JOIN committee_members cm_sub 
                         ON (ufm.id = cm_sub.family_member_id OR (ufm.member_name = cm_sub.name AND ufm.user_id = cm_sub.user_id))
-                     WHERE ufm.user_id IN (?)`,
-                    [userIds]
+                     WHERE ufm.user_id IN (${userIdsString})`
                 );
                 familyRows = fRows;
             } catch (err) {
@@ -109,11 +109,12 @@ exports.getAllMembers = async (req, res) => {
                          FROM family_members fm
                          LEFT JOIN committee_members cm_sub 
                             ON (fm.id = cm_sub.family_member_id OR (fm.member_name = cm_sub.name AND fm.user_id = cm_sub.user_id))
-                         WHERE fm.user_id IN (?)`,
-                        [userIds]
+                         WHERE fm.user_id IN (${userIdsString})`
                     );
                     familyRows = altRows;
-                } catch (e) {}
+                } catch (e) {
+                    console.error("Family list load error:", e.message);
+                }
             }
 
             const familyMap = {};
@@ -214,6 +215,7 @@ exports.getMemberDetailsById = async (req, res) => {
         } catch (e) {}
 
         member.family_members = familyMembers;
+        member.familyMembers = familyMembers;
 
         res.json({
             success: true,
