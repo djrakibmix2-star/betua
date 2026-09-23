@@ -51,6 +51,10 @@ app.use('/api/islamic-qa', islamicRoutes);
 const committeeQaRoutes = require('./modules/question/committeeQaRoutes'); 
 app.use('/api/committee-qa', committeeQaRoutes);
 
+// নোটিফিকেশন রাউট
+const notificationRoutes = require('./modules/notifications/notificationRoutes');
+app.use('/api/notifications', notificationRoutes);
+
 // **আপডেট রাউট (যদি আপনার ফোল্ডারের নাম update হয়)**
 // যদি ফোল্ডারের নাম অন্য কিছু হয়, তবে './modules/update/updateRoutes' এর জায়গায় সঠিক পাথটি দেবেন
 try {
