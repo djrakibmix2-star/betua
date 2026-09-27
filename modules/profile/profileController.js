@@ -7,7 +7,7 @@ exports.getMyProfile = async (req, res) => {
         const userId = req.user.id;
 
         const [users] = await db.query(
-            `SELECT id, name, father_name, para_name, gender, age, family_members_count, 
+            `SELECT id, member_id, name, father_name, para_name, gender, age, family_members_count, 
                     has_android_expert, phone, avatar_url, base_role, status 
              FROM users WHERE id = ? AND (is_deleted = 0 OR is_deleted IS NULL)`, 
             [userId]
@@ -238,7 +238,7 @@ exports.approveRequest = async (req, res) => {
         connection = await db.getConnection();
         await connection.beginTransaction();
 
-        // ১. প্রথমে প্রোফাইল এডিট রিকোয়েস্ট চেক করা (request_id বা id দিয়ে)
+        // ১. প্রথমে প্রোফাইল এডিট রিকোয়েস্ট চেক করা (request_id বা id দিয়ে)
         const [editRequests] = await connection.query(
             `SELECT * FROM profile_edit_requests 
              WHERE (id = ? OR user_id = ?) AND UPPER(status) = 'PENDING' 
@@ -331,9 +331,9 @@ exports.approveRequest = async (req, res) => {
         if (connection) connection.release();
     }
 };
+
 // (অ্যাডমিন) আবেদন বাতিল বা রিজেক্ট করা
 exports.rejectRequest = async (req, res) => {
-    // প্যারামিটার থেকে আইডি রিসিভ করা (যেহেতু রাউটে :requestId আছে)
     const requestId = req.params.requestId || req.params.id;
     const { note } = req.body || {};
 
@@ -366,10 +366,9 @@ exports.rejectRequest = async (req, res) => {
             });
         }
 
-        // যদি কোনো পেন্ডিং রিকোয়েস্টই না পাওয়া যায়
         return res.status(404).json({ 
             success: false, 
-            message: "আবেদনটি পাওয়া যায়নি অথবা ইতিমধ্যে প্রসেস করা হয়েছে।" 
+            message: "আবেদনটি পাওয়া যায়নি অথবা ইতিমধ্যে প্রসেস করা হয়েছে।" 
         });
 
     } catch (error) {

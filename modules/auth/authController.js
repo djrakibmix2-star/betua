@@ -1,6 +1,7 @@
 const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
 
 // ০. সকল সক্রিয় সমাজ/মসজিদের তালিকা (পাবলিক API - লগইন ড্রপডাউনের জন্য)
 exports.getActiveSocieties = async (req, res) => {
@@ -26,15 +27,27 @@ exports.register = async (req, res) => {
 
         const { name, phone, password, para_name, family_member_count, father_name, family_members, age, gender, society_id } = req.body;
 
-        if (!name || !phone || !password) {
+        // --- আপডেট: কড়া ভ্যালিডেশন (সব ফিল্ড চেক) ---
+        if (!name || !phone || !password || !society_id || !father_name || !para_name || !age || !gender || !family_member_count) {
             await connection.release();
-            return res.status(400).json({ success: false, message: 'নাম, মোবাইল নম্বর এবং পাসওয়ার্ড দেওয়া বাধ্যতামূলক।' });
+            return res.status(400).json({ 
+                success: false, 
+                message: 'রেজিস্ট্রেশন সম্পন্ন করতে ফর্মের প্রতিটি তথ্য (নাম, মোবাইল, পাসওয়ার্ড, সমাজ নির্বাচন, পিতার নাম, পাড়া/মহল্লা, বয়স, লিঙ্গ এবং পরিবারের সদস্য সংখ্যা) দেওয়া বাধ্যতামূলক।' 
+            });
         }
 
-        const targetSocietyId = parseInt(society_id, 10) || 1;
+        // --- আপডেট: মোবাইল নম্বর ভ্যালিডেশন ---
+        const phoneNumber = parsePhoneNumberFromString(phone.trim(), 'BD');
+        if (!phoneNumber || !phoneNumber.isValid()) {
+            await connection.release();
+            return res.status(400).json({ success: false, message: 'অনুগ্রহ করে সঠিক কান্ট্রি কোডসহ একটি বৈধ মোবাইল নম্বর প্রদান করুন।' });
+        }
+        const formattedPhone = phoneNumber.number; // +88017... ফরম্যাট
 
-        // নির্দিষ্ট সমাজে এই নম্বরে একাউন্ট আছে কি না চেক
-        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ? AND society_id = ?', [phone.trim(), targetSocietyId]);
+        const targetSocietyId = parseInt(society_id, 10);
+
+        // নির্দিষ্ট সমাজে এই নম্বরে একাউন্ট আছে কি না চেক (formattedPhone দিয়ে)
+        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ? AND society_id = ?', [formattedPhone, targetSocietyId]);
         if (existing.length > 0) {
             await connection.release();
             return res.status(400).json({ success: false, message: 'এই সমাজে উক্ত নম্বর দিয়ে ইতিমধ্যে একাউন্ট রয়েছে।' });
@@ -44,16 +57,27 @@ exports.register = async (req, res) => {
         
         // ফ্যামিলি মেম্বার লিস্ট ফিল্টার করা
         const membersList = Array.isArray(family_members) ? family_members.filter(m => m && typeof m === 'string' && m.trim() !== '') : [];
-        const familyCount = membersList.length > 0 ? membersList.length : (parseInt(family_member_count) || 1);
+        const familyCount = membersList.length > 0 ? membersList.length : parseInt(family_member_count, 10);
 
-        // ইউজার ইনসার্ট (society_id সহ)
+        // ইউজার ইনসার্ট (formattedPhone সহ)
         const [userResult] = await connection.query(
             `INSERT INTO users (name, father_name, phone, password_hash, para_name, family_members_count, base_role, status, age, gender, society_id)
              VALUES (?, ?, ?, ?, ?, ?, 'MEMBER', 'PENDING', ?, ?, ?)`,
-            [name.trim(), father_name ? father_name.trim() : null, phone.trim(), hashedPassword, para_name ? para_name.trim() : null, familyCount, age || 0, gender || 'MALE', targetSocietyId]
+            [name.trim(), father_name.trim(), formattedPhone, hashedPassword, para_name.trim(), familyCount, age, gender, targetSocietyId]
         );
 
         const userId = userResult.insertId;
+
+        // --- নতুন মেম্বার আইডি জেনারেট ও সেভ করার লজিক ---
+        const currentYear = new Date().getFullYear();
+        const formattedId = String(userId).padStart(3, '0');
+        const memberId = `SOC${currentYear}${formattedId}`; // উদাহরণ: SOC2026008
+
+        await connection.query(
+            'UPDATE users SET member_id = ? WHERE id = ?',
+            [memberId, userId]
+        );
+        // ------------------------------------------------
 
         // user_family_members টেবিলে মেম্বারদের নাম ইনসার্ট
         if (membersList.length > 0) {
@@ -73,7 +97,7 @@ exports.register = async (req, res) => {
         await connection.commit();
         connection.release();
 
-        res.json({ success: true, message: `নিবন্ধন সফল হয়েছে। আপনার ফ্যামিলি কোড (ID): ${userId}। অ্যাডমিনের অনুমোদনের পর লগইন করতে পারবেন।` });
+        res.json({ success: true, message: `নিবন্ধন সফল হয়েছে। আপনার মেম্বার আইডি: ${memberId}। অ্যাডমিনের অনুমোদনের পর লগইন করতে পারবেন।` });
     } catch (err) {
         await connection.rollback();
         connection.release();
@@ -96,11 +120,21 @@ exports.login = async (req, res) => {
         }
 
         const isEmail = loginId.includes('@');
+        
+        // --- আপডেট: লগইনের সময়ও ফোন নম্বরটি স্ট্যান্ডার্ড ফরম্যাটে রূপান্তর করা ---
+        let searchIdFormatted = loginId.trim();
+        if (!isEmail) {
+            const phoneCheck = parsePhoneNumberFromString(searchIdFormatted, 'BD');
+            if (phoneCheck && phoneCheck.isValid()) {
+                searchIdFormatted = phoneCheck.number;
+            }
+        }
+
         const query = isEmail 
             ? 'SELECT * FROM users WHERE email = ? AND society_id = ?' 
             : 'SELECT * FROM users WHERE phone = ? AND society_id = ?';
         
-        const [rows] = await db.query(query, [loginId.trim(), parseInt(society_id, 10)]);
+        const [rows] = await db.query(query, [searchIdFormatted, parseInt(society_id, 10)]);
         
         if (rows.length === 0) {
             return res.status(400).json({ success: false, message: 'উক্ত সমাজে এই নম্বরে বা ইমেইলে কোনো একাউন্ট নেই।' });
@@ -136,6 +170,7 @@ exports.login = async (req, res) => {
             token,
             user: {
                 id: user.id,
+                member_id: user.member_id || user.id, 
                 name: user.name,
                 fatherName: user.father_name,
                 phone: user.phone,
@@ -254,6 +289,7 @@ exports.getProfile = async (req, res) => {
             message: 'প্রোফাইল তথ্য সফলভাবে লোড হয়েছে।',
             user: {
                 id: u.id,
+                member_id: u.member_id || u.id,
                 name: u.name,
                 fatherName: u.father_name,
                 phone: u.phone,
@@ -312,7 +348,14 @@ exports.claimSubProfile = async (req, res) => {
             return res.status(400).json({ success: false, message: 'প্রয়োজনীয় তথ্য অসম্পূর্ণ।' });
         }
 
-        // প্যারেন্ট ইউজারের society_id ও para_name নেওয়া
+        // --- আপডেট: ক্লেইম প্রোফাইলেও মোবাইল নম্বর ভ্যালিডেশন ---
+        const phoneNumber = parsePhoneNumberFromString(phone.trim(), 'BD');
+        if (!phoneNumber || !phoneNumber.isValid()) {
+            await connection.release();
+            return res.status(400).json({ success: false, message: 'সঠিক কান্ট্রি কোডসহ একটি বৈধ মোবাইল নম্বর প্রদান করুন।' });
+        }
+        const formattedPhone = phoneNumber.number;
+
         const [parentUser] = await connection.query('SELECT para_name, society_id FROM users WHERE id = ?', [parent_id]);
         if (parentUser.length === 0) {
             await connection.release();
@@ -321,7 +364,8 @@ exports.claimSubProfile = async (req, res) => {
         const paraName = parentUser[0].para_name;
         const societyId = parentUser[0].society_id || 1;
 
-        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ? AND society_id = ?', [phone.trim(), societyId]);
+        // চেক করার সময় formattedPhone ব্যবহার করা হলো
+        const [existing] = await connection.query('SELECT id FROM users WHERE phone = ? AND society_id = ?', [formattedPhone, societyId]);
         if (existing.length > 0) {
             await connection.release();
             return res.status(400).json({ success: false, message: 'এই মোবাইল নম্বরটি এই সমাজে ইতিমধ্যে ব্যবহৃত হচ্ছে।' });
@@ -336,13 +380,23 @@ exports.claimSubProfile = async (req, res) => {
         const member = memberData[0];
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // ইনসার্ট করার সময় formattedPhone ব্যবহার করা হলো
         const [newUser] = await connection.query(
             `INSERT INTO users (name, phone, email, password_hash, para_name, base_role, status, age, gender, society_id)
              VALUES (?, ?, ?, ?, ?, 'MEMBER', 'PENDING', ?, ?, ?)`,
-            [member.member_name, phone.trim(), email ? email.trim() : null, hashedPassword, paraName, member.age || age || 0, gender || 'MALE', societyId]
+            [member.member_name, formattedPhone, email ? email.trim() : null, hashedPassword, paraName, member.age || age || 0, gender || 'MALE', societyId]
         );
 
         const newUserId = newUser.insertId;
+
+        const currentYear = new Date().getFullYear();
+        const formattedId = String(newUserId).padStart(3, '0');
+        const customMemberId = `SOC${currentYear}${formattedId}`;
+
+        await connection.query(
+            'UPDATE users SET member_id = ? WHERE id = ?',
+            [customMemberId, newUserId]
+        );
 
         await connection.query(
             'UPDATE user_family_members SET is_claimed = TRUE, claimed_user_id = ? WHERE id = ?',
@@ -352,7 +406,7 @@ exports.claimSubProfile = async (req, res) => {
         await connection.commit();
         connection.release();
 
-        res.json({ success: true, message: 'আপনার নতুন প্রোফাইল তৈরি হয়েছে। অ্যাডমিনের অনুমোদনের পর লগইন করতে পারবেন।' });
+        res.json({ success: true, message: `আপনার নতুন প্রোফাইল তৈরি হয়েছে। আইডি: ${customMemberId}। অ্যাডমিনের অনুমোদনের পর লগইন করতে পারবেন।` });
     } catch (err) {
         await connection.rollback();
         connection.release();
@@ -360,7 +414,7 @@ exports.claimSubProfile = async (req, res) => {
     }
 };
 
-// ৯. নির্বাচনের জন্য সদস্য ও তার পরিবার খোঁজার লজিক
+// ৯. নির্বাচনের জন্য সদস্য ও তার পরিবার খোঁজার লজিক (Dual Search Supported)
 exports.getElectionMemberByCode = async (req, res) => {
     try {
         const { family_code } = req.body; 
@@ -370,17 +424,19 @@ exports.getElectionMemberByCode = async (req, res) => {
         }
 
         const codeStr = family_code.toString().trim();
-        if (codeStr.length < 5) {
-            return res.status(400).json({ success: false, message: 'সঠিক ফ্যামিলি কোড প্রদান করুন।' });
-        }
+        const searchId = isNaN(codeStr) ? 0 : parseInt(codeStr, 10); 
 
-        const realIdStr = codeStr.slice(-4);
-        const realId = parseInt(realIdStr, 10);
-
-        const [users] = await db.query('SELECT id, name as member_name, "মূল সদস্য" as relation, 0 as age FROM users WHERE id = ?', [realId]);
+        const [users] = await db.query(
+            `SELECT id, member_id, name as member_name, "মূল সদস্য" as relation, 0 as age 
+             FROM users WHERE member_id = ? OR id = ?`, 
+            [codeStr, searchId]
+        );
+        
         if (users.length === 0) {
             return res.status(404).json({ success: false, message: 'এই কোডের কোনো সদস্য পাওয়া যায়নি।' });
         }
+
+        const realId = users[0].id;
 
         const [familyMembers] = await db.query(
             'SELECT id, member_name, relation, age FROM user_family_members WHERE user_id = ? AND status = "ACTIVE"',
@@ -399,7 +455,7 @@ exports.getElectionMemberByCode = async (req, res) => {
     } 
 };
 
-// ১০. কমিটির জন্য মেম্বার কোড দিয়ে ইউজার ও তার পরিবারের সদস্যদের সার্চ করা
+// ১০. কমিটির জন্য মেম্বার কোড দিয়ে ইউজার ও তার পরিবারের সদস্যদের সার্চ করা (Dual Search Supported)
 exports.getCommitteeMemberByCode = async (req, res) => {
     try {
         const { member_code } = req.body;
@@ -409,17 +465,18 @@ exports.getCommitteeMemberByCode = async (req, res) => {
         }
 
         const codeStr = member_code.toString().trim();
-        let targetUserId;
-        if (codeStr.length >= 5) {
-            targetUserId = parseInt(codeStr.slice(-4), 10);
+        
+        let searchId;
+        if (!isNaN(codeStr) && codeStr.length >= 5) {
+            searchId = parseInt(codeStr.slice(-4), 10);
         } else {
-            targetUserId = parseInt(codeStr, 10);
+            searchId = isNaN(codeStr) ? 0 : parseInt(codeStr, 10);
         }
 
         const [users] = await db.query(
             `SELECT id as user_id, NULL as family_member_id, name, phone, para_name, 'পরিবার প্রধান' as relation 
-             FROM users WHERE id = ?`, 
-            [targetUserId]
+             FROM users WHERE member_id = ? OR id = ?`, 
+            [codeStr, searchId]
         );
 
         if (users.length === 0) {
@@ -432,7 +489,7 @@ exports.getCommitteeMemberByCode = async (req, res) => {
             `SELECT id as family_member_id, member_name as name, relation, phone 
              FROM user_family_members 
              WHERE user_id = ? AND status = 'ACTIVE'`,
-            [targetUserId]
+            [headUser.user_id]
         );
 
         const familyFormatted = familyRows.map(member => ({
