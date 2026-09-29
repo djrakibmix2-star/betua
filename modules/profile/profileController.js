@@ -1,19 +1,22 @@
 const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
 const path = require('path');
-
-// 👈 নতুন ফায়ারবেস অ্যাডমিন ইমপোর্ট (v12+ এর জন্য)
 const { initializeApp, getApps, cert } = require('firebase-admin/app');
 const { getStorage } = require('firebase-admin/storage');
 
-// ഫায়ারবেস ইনিশিয়ালাইজেশন
+// __dirname ব্যবহার করে সঠিক পাথ সেট করা হলো
+const serviceAccountPath = path.join(__dirname, '../../firebase-service-account.json');
+
 if (getApps().length === 0) {
-    // process.cwd() ব্যবহার করা হলো যাতে ফোল্ডারের পাথ নিয়ে কোনো এরর না আসে
-    const serviceAccount = require(path.join(process.cwd(), 'firebase-service-account.json')); 
-    initializeApp({
-        credential: cert(serviceAccount),
-        storageBucket: 'somaj10.appspot.com' 
-    });
+    try {
+        const serviceAccount = require(serviceAccountPath);
+        initializeApp({
+            credential: cert(serviceAccount),
+            storageBucket: 'somaj10.appspot.com' 
+        });
+    } catch (error) {
+        console.error("Firebase Admin Error in Profile:", error.message);
+    }
 }
 const bucket = getStorage().bucket();
 
@@ -397,11 +400,9 @@ exports.uploadAvatar = async (req, res) => {
             return res.status(400).json({ success: false, message: "কোনো ছবি সিলেক্ট করা হয়নি!" });
         }
 
-        // ফাইলের একটি ইউনিক নাম তৈরি
         const filename = `avatars/user_${userId}_${Date.now()}_${file.originalname.replace(/ /g, "_")}`;
         const fileUpload = bucket.file(filename);
 
-        // ফায়ারবেসে আপলোড
         const stream = fileUpload.createWriteStream({
             metadata: { contentType: file.mimetype }
         });
@@ -412,11 +413,9 @@ exports.uploadAvatar = async (req, res) => {
         });
 
         stream.on('finish', async () => {
-            // ছবিটিকে পাবলিক করা
             await fileUpload.makePublic();
             const publicUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
 
-            // ডাটাবেজে লিংক সেভ করা
             await db.query(`UPDATE users SET avatar_url = ? WHERE id = ?`, [publicUrl, userId]);
 
             res.json({
@@ -426,7 +425,6 @@ exports.uploadAvatar = async (req, res) => {
             });
         });
 
-        // ফাইল বাফার পাস করা
         stream.end(file.buffer);
     } catch (error) {
         console.error("uploadAvatar Error:", error);
