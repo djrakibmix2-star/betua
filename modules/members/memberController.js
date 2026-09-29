@@ -50,6 +50,7 @@ exports.getAllMembers = async (req, res) => {
                 u.phone, 
                 u.father_name AS fatherName, 
                 u.para_name AS paraName, 
+                u.avatar_url, 
                 COALESCE(u.family_members_count, 1) AS familyMembersCount, 
                 u.base_role AS role, 
                 u.status, 
@@ -80,7 +81,6 @@ exports.getAllMembers = async (req, res) => {
 
             let familyRows = [];
             try {
-                // এখানে cm_sub.name বাদ দিয়ে কেবল আইডি দিয়ে জয়েন করা হয়েছে
                 const [fRows] = await db.query(
                     `SELECT 
                         ufm.id, 
@@ -171,6 +171,7 @@ exports.getMemberDetailsById = async (req, res) => {
                 u.phone, 
                 u.father_name, 
                 u.para_name, 
+                u.avatar_url,
                 COALESCE(u.family_members_count, 1) AS family_members_count, 
                 u.base_role, 
                 u.status, 
@@ -265,7 +266,7 @@ exports.adminUpdateMember = async (req, res) => {
             await connection.rollback();
             return res.status(403).json({
                 success: false,
-                message: 'এডমিন নিজের পদবী পরিবর্তন করতে পারবেন কাশী।'
+                message: 'এডমিন নিজের পদবী পরিবর্তন করতে পারবেন না।'
             });
         }
 
