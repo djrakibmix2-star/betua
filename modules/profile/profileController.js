@@ -25,8 +25,9 @@ exports.getMyProfile = async (req, res) => {
     try {
         const userId = req.user.id;
 
+        // 👈 এখানে society_id AS member_id করে দেওয়া হয়েছে
         const [users] = await db.query(
-            `SELECT id, member_id, name, father_name, para_name, gender, age, family_members_count, 
+            `SELECT id, society_id AS member_id, name, father_name, para_name, gender, age, family_members_count, 
                     has_android_expert, phone, avatar_url, base_role, status 
              FROM users WHERE id = ? AND (is_deleted = 0 OR is_deleted IS NULL)`, 
             [userId]
