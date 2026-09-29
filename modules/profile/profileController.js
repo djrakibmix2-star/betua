@@ -1,5 +1,17 @@
 const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
+const admin = require('firebase-admin');
+
+// ফায়ারবেস ইনিশিয়ালাইজেশন (যদি আগে থেকে ইনিশিয়ালাইজ করা না থাকে)
+if (!admin.apps.length) {
+    // লক্ষ্য করুন: json ফাইলটি আপনার রুট ফোল্ডারে থাকতে হবে, পাথটি সঠিক কিনা দেখে নিবেন
+    const serviceAccount = require('../../firebase-service-account.json'); 
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        storageBucket: 'somaj10.appspot.com' 
+    });
+}
+const bucket = admin.storage().bucket();
 
 // ১. ইউজারের প্রোফাইল তথ্য এবং বর্তমান ফ্যামিলি মেম্বারদের তালিকা দেখা
 exports.getMyProfile = async (req, res) => {
@@ -153,7 +165,6 @@ exports.changePassword = async (req, res) => {
 // ৪. (অ্যাডমিন) সকল পেন্ডিং আবেদন দেখা
 exports.getAllPendingRequests = async (req, res) => {
     try {
-        // ১. নতুন রেজিস্ট্রেশন আবেদন
         const [pendingUsers] = await db.query(
             `SELECT id as request_id, id as user_id, name as user_name, phone as user_phone, 
                     father_name as requested_father_name, para_name as requested_para_name, 
@@ -179,7 +190,6 @@ exports.getAllPendingRequests = async (req, res) => {
             u.current_family_members = [];
         }
 
-        // ২. প্রোফাইল এডিট আবেদন
         const [editRequests] = await db.query(
             `SELECT r.id as request_id, r.user_id, 
                     u.name as user_name, u.phone as user_phone, 
@@ -238,7 +248,6 @@ exports.approveRequest = async (req, res) => {
         connection = await db.getConnection();
         await connection.beginTransaction();
 
-        // ১. প্রথমে প্রোফাইল এডিট রিকোয়েস্ট চেক করা (request_id বা id দিয়ে)
         const [editRequests] = await connection.query(
             `SELECT * FROM profile_edit_requests 
              WHERE (id = ? OR user_id = ?) AND UPPER(status) = 'PENDING' 
@@ -302,7 +311,6 @@ exports.approveRequest = async (req, res) => {
             });
         }
 
-        // ২. নতুন ইউজার রেজিস্ট্রেশন অনুমোদন
         const [userCheck] = await connection.query(
             `SELECT * FROM users WHERE id = ? AND UPPER(status) = 'PENDING' FOR UPDATE`,
             [requestId]
@@ -332,13 +340,12 @@ exports.approveRequest = async (req, res) => {
     }
 };
 
-// (অ্যাডমিন) আবেদন বাতিল বা রিজেক্ট করা
+// ৬. (অ্যাডমিন) আবেদন বাতিল বা রিজেক্ট করা
 exports.rejectRequest = async (req, res) => {
     const requestId = req.params.requestId || req.params.id;
     const { note } = req.body || {};
 
     try {
-        // ১. প্রথমে চেক করবে এটি 'প্রোফাইল এডিট' রিকোয়েস্ট কিনা
         const [editResult] = await db.query(
             `UPDATE profile_edit_requests SET status = 'REJECTED', admin_note = ? 
              WHERE id = ? AND UPPER(status) = 'PENDING'`,
@@ -352,7 +359,6 @@ exports.rejectRequest = async (req, res) => {
             });
         }
 
-        // ২. যদি প্রোফাইল এডিট রিকোয়েস্ট না হয়, তবে এটি 'নতুন রেজিস্ট্রেশন' হিসেবে রিজেক্ট করবে
         const [userResult] = await db.query(
             `UPDATE users SET status = 'REJECTED' 
              WHERE id = ? AND UPPER(status) = 'PENDING'`,
@@ -373,6 +379,53 @@ exports.rejectRequest = async (req, res) => {
 
     } catch (error) {
         console.error("rejectRequest Error:", error);
+        res.status(500).json({ success: false, message: "সার্ভার সমস্যা: " + error.message });
+    }
+};
+
+// ৭. ছবি আপলোড ও ফায়ারবেসে সংরক্ষণ
+exports.uploadAvatar = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const file = req.file;
+
+        if (!file) {
+            return res.status(400).json({ success: false, message: "কোনো ছবি সিলেক্ট করা হয়নি!" });
+        }
+
+        // ফাইলের একটি ইউনিক নাম তৈরি
+        const filename = `avatars/user_${userId}_${Date.now()}_${file.originalname.replace(/ /g, "_")}`;
+        const fileUpload = bucket.file(filename);
+
+        // ফায়ারবেসে আপলোড
+        const stream = fileUpload.createWriteStream({
+            metadata: { contentType: file.mimetype }
+        });
+
+        stream.on('error', (error) => {
+            console.error("Firebase upload error:", error);
+            return res.status(500).json({ success: false, message: "ছবি আপলোডে সমস্যা হয়েছে।" });
+        });
+
+        stream.on('finish', async () => {
+            // ছবিটিকে পাবলিক করা
+            await fileUpload.makePublic();
+            const publicUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
+
+            // ডাটাবেজে লিংক সেভ করা
+            await db.query(`UPDATE users SET avatar_url = ? WHERE id = ?`, [publicUrl, userId]);
+
+            res.json({
+                success: true,
+                message: "প্রোফাইল পিকচার সফলভাবে আপডেট হয়েছে!",
+                avatar_url: publicUrl
+            });
+        });
+
+        // ফাইল বাফার পাস করা
+        stream.end(file.buffer);
+    } catch (error) {
+        console.error("uploadAvatar Error:", error);
         res.status(500).json({ success: false, message: "সার্ভার সমস্যা: " + error.message });
     }
 };
