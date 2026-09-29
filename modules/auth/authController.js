@@ -121,14 +121,8 @@ exports.login = async (req, res) => {
 
         const isEmail = loginId.includes('@');
         
-        // --- আপডেট: লগইনের সময়ও ফোন নম্বরটি স্ট্যান্ডার্ড ফরম্যাটে রূপান্তর করা ---
-        let searchIdFormatted = loginId.trim();
-        if (!isEmail) {
-            const phoneCheck = parsePhoneNumberFromString(searchIdFormatted, 'BD');
-            if (phoneCheck && phoneCheck.isValid()) {
-                searchIdFormatted = phoneCheck.number;
-            }
-        }
+        // 🔴 ফোন নম্বরে +88 যুক্ত করার ঝামেলা দূর করা হলো
+        const searchIdFormatted = loginId.trim(); // সরাসরি ইউজারের দেওয়া নম্বর ব্যবহার হবে
 
         const query = isEmail 
             ? 'SELECT * FROM users WHERE email = ? AND society_id = ?' 
