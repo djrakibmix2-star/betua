@@ -1,31 +1,11 @@
 const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
-const path = require('path');
-const { initializeApp, getApps, cert } = require('firebase-admin/app');
-const { getStorage } = require('firebase-admin/storage');
-
-// __dirname ব্যবহার করে সঠিক পাথ সেট করা হলো
-const serviceAccountPath = path.join(__dirname, '../../firebase-service-account.json');
-
-if (getApps().length === 0) {
-    try {
-        const serviceAccount = require(serviceAccountPath);
-        initializeApp({
-            credential: cert(serviceAccount),
-            storageBucket: 'somaj10.appspot.com' 
-        });
-    } catch (error) {
-        console.error("Firebase Admin Error in Profile:", error.message);
-    }
-}
-const bucket = getStorage().bucket();
 
 // ১. ইউজারের প্রোফাইল তথ্য এবং বর্তমান ফ্যামিলি মেম্বারদের তালিকা দেখা
 exports.getMyProfile = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // 👈 এখানে society_id AS member_id করে দেওয়া হয়েছে
         const [users] = await db.query(
             `SELECT id, society_id AS member_id, name, father_name, para_name, gender, age, family_members_count, 
                     has_android_expert, phone, avatar_url, base_role, status 
@@ -391,7 +371,7 @@ exports.rejectRequest = async (req, res) => {
     }
 };
 
-// ৭. ছবি আপলোড ও ফায়ারবেসে সংরক্ষণ
+// ৭. ছবি আপলোড ও ImgBB তে সংরক্ষণ (নতুন নিয়ম)
 exports.uploadAvatar = async (req, res) => {
     try {
         const userId = req.user.id;
@@ -401,22 +381,27 @@ exports.uploadAvatar = async (req, res) => {
             return res.status(400).json({ success: false, message: "কোনো ছবি সিলেক্ট করা হয়নি!" });
         }
 
-        const filename = `avatars/user_${userId}_${Date.now()}_${file.originalname.replace(/ /g, "_")}`;
-        const fileUpload = bucket.file(filename);
+        // ছবিকে Base64 ফরম্যাটে রূপান্তর
+        const base64Image = file.buffer.toString('base64');
+        
+        // আপনার দেওয়া ImgBB API Key বসানো হয়েছে
+        const IMGBB_API_KEY = 'c24b60716728f9f5dac2e1ef779986f1';
 
-        const stream = fileUpload.createWriteStream({
-            metadata: { contentType: file.mimetype }
+        const formData = new FormData();
+        formData.append('image', base64Image);
+
+        // ImgBB সার্ভারে ছবি পাঠানো
+        const response = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+            method: 'POST',
+            body: formData
         });
 
-        stream.on('error', (error) => {
-            console.error("Firebase upload error:", error);
-            return res.status(500).json({ success: false, message: "ছবি আপলোডে সমস্যা হয়েছে।" });
-        });
+        const data = await response.json();
 
-        stream.on('finish', async () => {
-            await fileUpload.makePublic();
-            const publicUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
+        if (data.success) {
+            const publicUrl = data.data.url; // ImgBB থেকে পাওয়া ছবির ডাইরেক্ট লিংক
 
+            // ডাটাবেজে সেভ করা
             await db.query(`UPDATE users SET avatar_url = ? WHERE id = ?`, [publicUrl, userId]);
 
             res.json({
@@ -424,9 +409,10 @@ exports.uploadAvatar = async (req, res) => {
                 message: "প্রোফাইল পিকচার সফলভাবে আপডেট হয়েছে!",
                 avatar_url: publicUrl
             });
-        });
-
-        stream.end(file.buffer);
+        } else {
+            console.error("ImgBB upload error:", data);
+            res.status(500).json({ success: false, message: "ছবি আপলোডে সমস্যা হয়েছে (ImgBB)।" });
+        }
     } catch (error) {
         console.error("uploadAvatar Error:", error);
         res.status(500).json({ success: false, message: "সার্ভার সমস্যা: " + error.message });
