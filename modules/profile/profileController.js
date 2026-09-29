@@ -1,17 +1,21 @@
 const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
-const admin = require('firebase-admin');
+const path = require('path');
 
-// ফায়ারবেস ইনিশিয়ালাইজেশন (যদি আগে থেকে ইনিশিয়ালাইজ করা না থাকে)
-if (!admin.apps.length) {
-    // লক্ষ্য করুন: json ফাইলটি আপনার রুট ফোল্ডারে থাকতে হবে, পাথটি সঠিক কিনা দেখে নিবেন
-    const serviceAccount = require('../../firebase-service-account.json'); 
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+// 👈 নতুন ফায়ারবেস অ্যাডমিন ইমপোর্ট (v12+ এর জন্য)
+const { initializeApp, getApps, cert } = require('firebase-admin/app');
+const { getStorage } = require('firebase-admin/storage');
+
+// ഫায়ারবেস ইনিশিয়ালাইজেশন
+if (getApps().length === 0) {
+    // process.cwd() ব্যবহার করা হলো যাতে ফোল্ডারের পাথ নিয়ে কোনো এরর না আসে
+    const serviceAccount = require(path.join(process.cwd(), 'firebase-service-account.json')); 
+    initializeApp({
+        credential: cert(serviceAccount),
         storageBucket: 'somaj10.appspot.com' 
     });
 }
-const bucket = admin.storage().bucket();
+const bucket = getStorage().bucket();
 
 // ১. ইউজারের প্রোফাইল তথ্য এবং বর্তমান ফ্যামিলি মেম্বারদের তালিকা দেখা
 exports.getMyProfile = async (req, res) => {
