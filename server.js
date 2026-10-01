@@ -20,6 +20,7 @@ app.use('/api/members', require('./modules/members/memberRoutes'));
 app.use('/api/trash', require('./modules/trash/trashRoutes'));
 app.use('/api/elections', require('./modules/election/electionRoutes'));
 
+
 // দান ও সদকা পোর্টাল রাউট
 const donationRoutes = require('./modules/donations/donationRoutes'); 
 app.use('/api/donations', donationRoutes);
@@ -50,6 +51,11 @@ app.use('/api/islamic-qa', islamicRoutes);
 // কমিটি প্রশ্নোত্তরের রাউট (একবার মাত্র রাখা হলো)
 const committeeQaRoutes = require('./modules/question/committeeQaRoutes'); 
 app.use('/api/committee-qa', committeeQaRoutes);
+
+const constitutionRoutes = require('./modules/constitution/constitutionRoutes');
+
+// এপিআই পয়েন্ট তৈরি
+app.use('/api/constitution', constitutionRoutes);
 
 // নোটিফিকেশন রাউট
 const notificationRoutes = require('./modules/notifications/notificationRoutes');
