@@ -15,8 +15,9 @@ exports.getAllTrashItems = async (req, res) => {
         // ২. ডিলিট হওয়া ফান্ডের লেনদেন (fund_transactions টেবিল থেকে)
         let transactions = [];
         try {
+            // 🔴 ফিক্স: t.type এর বদলে t.transaction_type এবং t.title যুক্ত করা হলো
             const [tRows] = await db.query(`
-                SELECT t.id, t.amount, t.type, 'transaction' AS type_name, t.updated_at AS deleted_at, del.name as deleted_by_name 
+                SELECT t.id, t.title, t.amount, t.transaction_type, 'transaction' AS type_name, t.updated_at AS deleted_at, del.name as deleted_by_name 
                 FROM fund_transactions t 
                 LEFT JOIN users del ON t.deleted_by = del.id 
                 WHERE t.is_deleted = 1 

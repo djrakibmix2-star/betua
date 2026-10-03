@@ -85,37 +85,36 @@ exports.getDashboardSummary = async (req, res) => {
             GROUP BY fund_type
         `);
 
-        // সব পেন্ডিং অঙ্গীকারের যোগফল সরাসরি বের করা (কেস-সেন্সিটিভ সমস্যা এড়াতে UPPER ব্যবহার করা হয়েছে)
+        // 🔴 ফিক্স: TRIM ব্যবহার করা হয়েছে যাতে ডাটাবেজে এক্সট্রা স্পেস থাকলেও সমস্যা না হয়
         const [pledgeRows] = await db.query(`
             SELECT 
                 fund_type,
                 SUM(amount) AS pending_pledge_total
             FROM fund_pledges
-            WHERE UPPER(status) = 'PENDING'
+            WHERE UPPER(TRIM(status)) = 'PENDING'
             GROUP BY fund_type
         `);
 
-        // সর্বমোট পেন্ডিং অঙ্গীকার আলাদাভাবে হিসাব করা
+        // 🔴 ফিক্স: TRIM ব্যবহার করা হয়েছে
         const [grandPendingRows] = await db.query(`
             SELECT SUM(amount) AS grand_total_pending 
             FROM fund_pledges 
-            WHERE UPPER(status) = 'PENDING'
+            WHERE UPPER(TRIM(status)) = 'PENDING'
         `);
 
+        // 🔴 ফিক্স: অ্যান্ড্রয়েড অ্যাপের সাথে মিল রাখার জন্য অবজেক্টের 'key' গুলো ছোট হাতের (lowercase) করা হলো
         const summary = {
-            MOSQUE: { income: 0, expense: 0, balance: 0, pendingPledge: 0 },
-            MADRASAH: { income: 0, expense: 0, balance: 0, pendingPledge: 0 },
-            GRAVEYARD: { income: 0, expense: 0, balance: 0, pendingPledge: 0 },
+            mosque: { income: 0, expense: 0, balance: 0, pendingPledge: 0 },
+            madrasah: { income: 0, expense: 0, balance: 0, pendingPledge: 0 },
+            graveyard: { income: 0, expense: 0, balance: 0, pendingPledge: 0 },
             grandTotalBalance: 0,
-            grandTotalPendingPledges: parseFloat(grandPendingRows[0]?.grand_total_pending || 0)
+            grandTotalPendingPledges: parseFloat(grandPendingRows[0]?.grand_total_pending) || 0
         };
 
         transRows.forEach(row => {
-            const fType = row.fund_type ? row.fund_type.toUpperCase() : null;
-            if (fType) {
-                if (!summary[fType]) {
-                    summary[fType] = { income: 0, expense: 0, balance: 0, pendingPledge: 0 };
-                }
+            // 🔴 ফিক্স: fund_type কে lowercase এ কনভার্ট করা হলো
+            const fType = row.fund_type ? row.fund_type.toLowerCase() : null;
+            if (fType && summary[fType]) {
                 const inc = parseFloat(row.total_income) || 0;
                 const exp = parseFloat(row.total_expense) || 0;
                 summary[fType].income = inc;
@@ -126,11 +125,9 @@ exports.getDashboardSummary = async (req, res) => {
         });
 
         pledgeRows.forEach(row => {
-            const fType = row.fund_type ? row.fund_type.toUpperCase() : null;
-            if (fType) {
-                if (!summary[fType]) {
-                    summary[fType] = { income: 0, expense: 0, balance: 0, pendingPledge: 0 };
-                }
+            // 🔴 ফিক্স: fund_type কে lowercase এ কনভার্ট করা হলো
+            const fType = row.fund_type ? row.fund_type.toLowerCase() : null;
+            if (fType && summary[fType]) {
                 const pld = parseFloat(row.pending_pledge_total) || 0;
                 summary[fType].pendingPledge = pld;
             }
@@ -310,7 +307,7 @@ exports.createPledge = async (req, res) => {
 
         const phoneToCheck = (donor_phone || '').trim();
 
-        let pendingQuery = 'SELECT COUNT(*) AS pendingCount FROM fund_pledges WHERE UPPER(status) = "PENDING" AND ';
+        let pendingQuery = 'SELECT COUNT(*) AS pendingCount FROM fund_pledges WHERE UPPER(TRIM(status)) = "PENDING" AND ';
         let queryParams = [];
 
         if (userId && phoneToCheck) {
@@ -338,7 +335,7 @@ exports.createPledge = async (req, res) => {
             } catch (err) {
                 if (phoneToCheck) {
                     const [fallbackRows] = await db.query(
-                        'SELECT COUNT(*) AS pendingCount FROM fund_pledges WHERE UPPER(status) = "PENDING" AND donor_phone = ?',
+                        'SELECT COUNT(*) AS pendingCount FROM fund_pledges WHERE UPPER(TRIM(status)) = "PENDING" AND donor_phone = ?',
                         [phoneToCheck]
                     );
                     if (fallbackRows && fallbackRows[0] && fallbackRows[0].pendingCount >= 5) {
@@ -392,7 +389,7 @@ exports.approvePledge = async (req, res) => {
             [pledgeId]
         );
 
-        if (!rows || rows.length === 0 || rows[0].status.toUpperCase() !== 'PENDING') {
+        if (!rows || rows.length === 0 || rows[0].status.toUpperCase().trim() !== 'PENDING') {
             await connection.rollback();
             return res.status(400).json({
                 success: false,
@@ -402,11 +399,13 @@ exports.approvePledge = async (req, res) => {
 
         const item = rows[0];
 
+        // প্রতিশ্রুতি অ্যাপ্রুভ হওয়ার পর এর স্ট্যাটাস APPROVED হয়ে যায়
         await connection.query(
             'UPDATE fund_pledges SET status = "APPROVED", approved_by = ? WHERE id = ?',
             [req.user?.id || null, pledgeId]
         );
 
+        // এরপর সেটি মূল ফান্ডের Income (আয়) হিসেবে যুক্ত হয়ে যায়
         const titleText = item.purpose ? `প্রতিশ্রুতি আদায়: ${item.purpose}` : 'প্রতিশ্রুতি আদায়';
         await connection.query(
             `INSERT INTO fund_transactions (fund_type, transaction_type, title, amount, category, payment_method, trx_id, donor_name, created_by)
@@ -443,7 +442,7 @@ exports.cancelPledge = async (req, res) => {
     try {
         const pledgeId = req.params.id;
         const [result] = await db.query(
-            'UPDATE fund_pledges SET status = "CANCELLED", approved_by = ? WHERE id = ? AND UPPER(status) = "PENDING"',
+            'UPDATE fund_pledges SET status = "CANCELLED", approved_by = ? WHERE id = ? AND UPPER(TRIM(status)) = "PENDING"',
             [req.user?.id || null, pledgeId]
         );
 
